@@ -1,0 +1,8 @@
+streamlit>=1.36
+fastf1>=3.3.5
+numpy>=1.26
+pandas>=2.2
+matplotlib>=3.8
+scipy>=1.11
+scikit-learn>=1.4
+torch==2.2.1
