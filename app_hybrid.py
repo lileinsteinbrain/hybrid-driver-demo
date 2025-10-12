@@ -1,44 +1,59 @@
 # app_hybrid.py
 import os
+import sys
 import time
 import json
-import sys
 import numpy as np
 import pandas as pd
 import streamlit as st
 
-# --- 禁用交互式后端，云端画图更稳 ---
+# --- 云端画图更稳：禁用交互式后端 ---
 os.environ.setdefault("MPLBACKEND", "Agg")
 
-# --- 让 Python 能找到 driver-fingerprint/scripts/utils_fp.py ---
+# ========= 路径与导入 =========
 ROOT = os.path.dirname(os.path.abspath(__file__))
 SCRIPTS_DIR = os.path.join(ROOT, "driver-fingerprint", "scripts")
 if SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, SCRIPTS_DIR)
 
-# --- FastF1 缓存用 /tmp，Cloud 可写；本地也没问题 ---
+# FastF1 缓存放 /tmp（Streamlit Cloud 可写）
 import fastf1
 FASTF1_CACHE = os.path.join("/tmp", "fastf1_cache")
 os.makedirs(FASTF1_CACHE, exist_ok=True)
-fastf1.Cache.enable_cache(FASTF1_CACHE)
+try:
+    fastf1.Cache.enable_cache(FASTF1_CACHE)
+except Exception as e:
+    # 不阻塞运行，但提示
+    pass
 
-# --- 我们自己的工具 ---
-from utils_fp import (
-    PolicyNet, nll_weighted,
-    collect_driver_laps_resampled, build_dataset
-)
+# 尝试导入我们自己的工具；失败就把详细信息直接显示出来
+try:
+    from utils_fp import (
+        PolicyNet, nll_weighted,
+        collect_driver_laps_resampled, build_dataset
+    )
+except Exception as e:
+    st.set_page_config(page_title="Hybrid Driver Demo", layout="wide")
+    st.error(
+        "❌ 无法导入 `utils_fp`。\n\n"
+        f"脚本目录：`{SCRIPTS_DIR}`\n"
+        f"目录是否存在：{os.path.isdir(SCRIPTS_DIR)}\n"
+        f"目录下文件：{os.listdir(SCRIPTS_DIR) if os.path.isdir(SCRIPTS_DIR) else '目录不存在'}\n\n"
+        f"错误：{e}"
+    )
+    st.stop()
 
-# ---------- 固定路径 ----------
+# ========= 固定结果路径 =========
 RESULT_DIR   = os.path.join(ROOT, "driver-fingerprint", "results", "integration_Q5")
 MODEL_PATH   = os.path.join(RESULT_DIR, "model.pth")
 SUMMARY_JSON = os.path.join(RESULT_DIR, "summary_integration.json")
 
-# ---------- Streamlit 页面 ----------
+# ========= 页面框架 =========
 st.set_page_config(page_title="Hybrid Driver Demo", layout="wide")
 st.sidebar.title("Hybrid Demo")
 st.sidebar.caption("Real telemetry → similarity vs driver fingerprints")
 
-# 年份/赛事（只开 Q）
+# 年份/赛事（先只开 Q）
 YEAR_OPTS = [2023, 2024]
 EVENT_BY_YEAR = {
     2023: [
@@ -60,7 +75,7 @@ EVENT_BY_YEAR = {
 with st.sidebar.expander("Session"):
     year = st.selectbox("Year", YEAR_OPTS, index=0)
     event_name = st.selectbox("Event", EVENT_BY_YEAR[year], index=0)
-    st.write("Session: **Qualifying (Q)**")  # Race 以后再放开
+    st.write("Session: **Qualifying (Q)**")
 
 # 读取 classes / z_dim（来自训练摘要）
 @st.cache_resource(show_spinner=True)
@@ -69,9 +84,10 @@ def load_model_info(summary_json: str):
     z_dim = 16
     if os.path.exists(summary_json):
         try:
-            info = json.load(open(summary_json, "r"))
+            with open(summary_json, "r") as f:
+                info = json.load(f)
             classes = info.get("classes", classes)
-            z_dim = int(info.get("best", {}).get("z_dim", 16))
+            z_dim = int(info.get("best", {}).get("z_dim", z_dim))
         except Exception:
             pass
     return classes, z_dim
@@ -89,19 +105,23 @@ with st.sidebar.expander("Playback"):
 st.title("Hybrid Driver Similarity — Qualifying Telemetry vs Driver Fingerprints")
 st.caption("Pick drivers & session, play lap telemetry; see **live similarity** to each pro’s fingerprint.")
 
-# ---------- 加载会话 ----------
+# ========= 加载会话 =========
 @st.cache_data(show_spinner=True, ttl=3600)
 def load_session(year: int, gp_name: str):
-    sess = fastf1.get_session(year, gp_name, "Q")  # 只用 Q
-    sess.load()
-    return sess
+    ses = fastf1.get_session(year, gp_name, "Q")
+    ses.load()
+    return ses
 
-session = load_session(year, event_name)
+try:
+    session = load_session(year, event_name)
+except Exception as e:
+    st.error(f"❌ FastF1 会话加载失败：{e}")
+    st.stop()
 
-# ---------- 提取/重采样若干圈（注意：_session，避免 cache 对象哈希报错） ----------
+# ========= 提取/重采样若干圈（_session 规避 cache hash 问题） =========
 @st.cache_data(show_spinner=True, ttl=600)
 def get_resampled_laps(_session, codes, n_pts=220, max_laps=3):
-    session = _session  # 只为避免 Streamlit 对 Session 做 hash
+    session = _session  # 仅为避免 Streamlit 对对象做 hash
     packs = {}
     for code in codes:
         try:
@@ -115,27 +135,43 @@ def get_resampled_laps(_session, codes, n_pts=220, max_laps=3):
 
 packs = get_resampled_laps(session, show_codes, n_pts=220, max_laps=3)
 
-# 选择 driver & 圈（选最快的前几圈里某一圈）
+# 选择 driver & 圈（在最快几圈里挑一圈）
 c1, c2 = st.columns([1, 1])
 with c1:
     drv = st.selectbox("Pick a driver", show_codes, index=0)
+
 S_list, A_list, M_list = packs.get(drv, ([], [], []))
 with c2:
     avail = len(S_list)
-    lap_idx = st.number_input("Lap index (fastest first)", min_value=0, max_value=max(0, avail-1), value=0, step=1)
+    lap_idx = st.number_input(
+        "Lap index (fastest first)",
+        min_value=0,
+        max_value=max(0, avail - 1),
+        value=0,
+        step=1,
+    )
 
 if not S_list:
-    st.error("No laps available for this driver/session. Try another driver or event.")
+    st.error("该会话/车手没有可用的圈。请换一位车手或赛事。")
     st.stop()
 
-# 与训练一致：切两个窗口 (0.15–0.55) & (0.60–0.85)
-S_all, A_all, meta, D_lap, lap_sizes = build_dataset(
-    [S_list[lap_idx]], [A_list[lap_idx]], [M_list[lap_idx]],
-    use_window=True, windows=((0.15, 0.55), (0.60, 0.85))
-)
+# ========= 与训练一致：两个窗口 (0.15–0.55) & (0.60–0.85) =========
+try:
+    S_all, A_all, meta, D_lap, lap_sizes = build_dataset(
+        [S_list[lap_idx]], [A_list[lap_idx]], [M_list[lap_idx]],
+        use_window=True, windows=((0.15, 0.55), (0.60, 0.85))
+    )
+except Exception as e:
+    st.error(f"❌ 构建窗口化数据失败：{e}")
+    st.stop()
 
-# ---------- 构图并载权重 ----------
-import torch
+# ========= 构图并载权重 =========
+try:
+    import torch
+except Exception as e:
+    st.error(f"❌ PyTorch 导入失败：{e}\n\n请确认 requirements.txt 使用了 CPU 版 torch 源。")
+    st.stop()
+
 device = "cuda" if torch.cuda.is_available() else "cpu"
 sd, ad = S_all.shape[1], A_all.shape[1]
 
@@ -143,14 +179,15 @@ model = PolicyNet(sd=sd, ad=ad, n=len(classes), z_dim=best_z, hidden=96, use_emb
 if os.path.exists(MODEL_PATH):
     try:
         state = torch.load(MODEL_PATH, map_location="cpu")
-        model.load_state_dict(state, strict=False)  # strict=False 防止 key 轻微不一致
+        model.load_state_dict(state, strict=False)  # 允许 key 略有不一致
     except Exception as e:
-        st.warning(f"Weight load mismatch (ok for demo): {e}")
+        st.warning(f"⚠️ 加载权重时发生兼容性问题（已忽略）：{e}")
 else:
-    st.warning("model.pth not found — using randomly initialized weights (demo only).")
+    st.warning("⚠️ 未找到 model.pth，当前使用随机初始化权重（仅演示）。")
+
 model.to(device).eval()
 
-# 动作 z-score（和训练一致）
+# 动作 z-score（与训练一致）
 A_mu = A_all.mean(0, keepdims=True)
 A_std = A_all.std(0, keepdims=True) + 1e-6
 A_std_all = (A_all - A_mu) / A_std
@@ -159,7 +196,7 @@ to_t = lambda x: torch.tensor(x, dtype=torch.float32, device=device)
 S_t = to_t(S_all)
 A_t = to_t(A_std_all)
 
-# 播放控件
+# ========= 播放控件 =========
 if "t_idx" not in st.session_state:
     st.session_state.t_idx = 0
 nT = S_t.shape[0]
@@ -205,7 +242,7 @@ prog = st.slider("timeline", 0, nT-1, st.session_state.t_idx, key="timeline")
 st.session_state.t_idx = prog
 
 # 自动播放
-if play:
+if play and nT > 0:
     time.sleep(1.0 / max(1, int(play_speed)))
     st.session_state.t_idx = (st.session_state.t_idx + 1) % nT if auto_loop else min(nT-1, st.session_state.t_idx+1)
     try:
