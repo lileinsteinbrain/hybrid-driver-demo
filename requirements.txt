@@ -1,15 +1,16 @@
-streamlit>=1.33
-
-numpy<2.0
-pandas<2.2
-scipy==1.11.4
-matplotlib==3.8.2
-scikit-learn==1.3.2
-
-fastf1==3.1.5
-requests-cache==1.2.0
-lxml==4.9.3
-thefuzz==0.20.0
-
 --extra-index-url https://download.pytorch.org/whl/cpu
-torch==2.2.1
+
+streamlit==1.37.1
+numpy==1.26.4
+pandas==2.2.2
+matplotlib==3.8.4
+scipy==1.11.4
+
+# FastF1 依赖组合在这些版本更稳
+fastf1==3.3.5
+requests>=2.31.0
+python-dateutil>=2.8.2
+pytz>=2024.1
+
+# CPU 版 PyTorch
+torch==2.2.1+cpu
