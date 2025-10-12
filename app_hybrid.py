@@ -2,28 +2,36 @@
 import os
 import time
 import json
+import sys
 import numpy as np
 import pandas as pd
 import streamlit as st
-import fastf1
 
-# --- 安全起见，禁用交互式后端 ---
+# --- 禁用交互式后端，云端画图更稳 ---
 os.environ.setdefault("MPLBACKEND", "Agg")
 
-# 让 Python 找到你的 utils_fp.py
-import sys
-sys.path.append(os.path.join(os.path.dirname(__file__), "driver-fingerprint", "scripts"))
-from utils_fp import PolicyNet, nll_weighted, collect_driver_laps_resampled, build_dataset
+# --- 让 Python 能找到 driver-fingerprint/scripts/utils_fp.py ---
+ROOT = os.path.dirname(os.path.abspath(__file__))
+SCRIPTS_DIR = os.path.join(ROOT, "driver-fingerprint", "scripts")
+if SCRIPTS_DIR not in sys.path:
+    sys.path.insert(0, SCRIPTS_DIR)
+
+# --- FastF1 缓存用 /tmp，Cloud 可写；本地也没问题 ---
+import fastf1
+FASTF1_CACHE = os.path.join("/tmp", "fastf1_cache")
+os.makedirs(FASTF1_CACHE, exist_ok=True)
+fastf1.Cache.enable_cache(FASTF1_CACHE)
+
+# --- 我们自己的工具 ---
+from utils_fp import (
+    PolicyNet, nll_weighted,
+    collect_driver_laps_resampled, build_dataset
+)
 
 # ---------- 固定路径 ----------
-PROJ_ROOT    = os.path.dirname(__file__)
-RESULT_DIR   = os.path.join(PROJ_ROOT, "driver-fingerprint", "results", "integration_Q5")
+RESULT_DIR   = os.path.join(ROOT, "driver-fingerprint", "results", "integration_Q5")
 MODEL_PATH   = os.path.join(RESULT_DIR, "model.pth")
 SUMMARY_JSON = os.path.join(RESULT_DIR, "summary_integration.json")
-FASTF1_CACHE = os.path.join(PROJ_ROOT, "data", "cache")
-
-# FastF1 缓存（Cloud 首次会自动下载到这里）
-fastf1.Cache.enable_cache(FASTF1_CACHE)
 
 # ---------- Streamlit 页面 ----------
 st.set_page_config(page_title="Hybrid Driver Demo", layout="wide")
@@ -34,11 +42,11 @@ st.sidebar.caption("Real telemetry → similarity vs driver fingerprints")
 YEAR_OPTS = [2023, 2024]
 EVENT_BY_YEAR = {
     2023: [
-        "British Grand Prix",        # Silverstone（宽）
-        "United States Grand Prix",  # Austin（节奏多变）
-        "Australian Grand Prix",     # Melbourne（可超车）
-        "Bahrain Grand Prix",        # Sakhir（宽、制动重）
-        "Brazilian Grand Prix",      # Interlagos（上坡弯多）
+        "British Grand Prix",
+        "United States Grand Prix",
+        "Australian Grand Prix",
+        "Bahrain Grand Prix",
+        "Brazilian Grand Prix",
     ],
     2024: [
         "British Grand Prix",
@@ -52,7 +60,7 @@ EVENT_BY_YEAR = {
 with st.sidebar.expander("Session"):
     year = st.selectbox("Year", YEAR_OPTS, index=0)
     event_name = st.selectbox("Event", EVENT_BY_YEAR[year], index=0)
-    st.write("Session: **Qualifying (Q)**")  # 先只开 Q，Race 以后再放开
+    st.write("Session: **Qualifying (Q)**")  # Race 以后再放开
 
 # 读取 classes / z_dim（来自训练摘要）
 @st.cache_resource(show_spinner=True)
@@ -90,16 +98,17 @@ def load_session(year: int, gp_name: str):
 
 session = load_session(year, event_name)
 
-# ---------- 提取/重采样若干圈 ----------
+# ---------- 提取/重采样若干圈（注意：_session，避免 cache 对象哈希报错） ----------
 @st.cache_data(show_spinner=True, ttl=600)
-def get_resampled_laps(session, codes, n_pts=220, max_laps=3):
+def get_resampled_laps(_session, codes, n_pts=220, max_laps=3):
+    session = _session  # 只为避免 Streamlit 对 Session 做 hash
     packs = {}
     for code in codes:
         try:
             S_list, A_list, M_list = collect_driver_laps_resampled(
                 session, code, n_pts=n_pts, max_laps=max_laps
             )
-        except Exception as e:
+        except Exception:
             S_list, A_list, M_list = [], [], []
         packs[code] = (S_list, A_list, M_list)
     return packs
@@ -134,7 +143,7 @@ model = PolicyNet(sd=sd, ad=ad, n=len(classes), z_dim=best_z, hidden=96, use_emb
 if os.path.exists(MODEL_PATH):
     try:
         state = torch.load(MODEL_PATH, map_location="cpu")
-        model.load_state_dict(state, strict=False)
+        model.load_state_dict(state, strict=False)  # strict=False 防止 key 轻微不一致
     except Exception as e:
         st.warning(f"Weight load mismatch (ok for demo): {e}")
 else:
