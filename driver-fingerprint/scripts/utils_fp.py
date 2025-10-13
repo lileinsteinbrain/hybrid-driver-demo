@@ -108,32 +108,39 @@ def build_dataset(S_list, A_list, M_list, use_window=True, windows=((0.15,0.55),
 
 # ----------------- model -----------------
 class PolicyNet(nn.Module):
-    def __init__(self, sd, ad, n, z_dim=8, hidden=96, dropout=0.1, use_embedding=True):
-        """
-        新增 dropout：两层 ReLU 之后各接 Dropout(dropout) —— 更稳更抗过拟合
-        """
+    def __init__(self, sd, ad, n, z_dim=8, hidden=96, use_embedding=True):
         super().__init__()
         self.use_embedding = use_embedding
+        self.allow_override = True  # ✅ 允许手动覆盖 embedding
+
         if use_embedding:
             self.emb = nn.Embedding(n, z_dim)
             in_dim = sd + z_dim
         else:
             self.emb = None
             in_dim = sd
+
         self.net = nn.Sequential(
             nn.Linear(in_dim, hidden), nn.ReLU(),
-            nn.Dropout(dropout),
             nn.Linear(hidden, hidden), nn.ReLU(),
-            nn.Dropout(dropout),
-            nn.Linear(hidden, ad*2)
+            nn.Linear(hidden, ad * 2)
         )
-    def forward(self, s, d=None):
+
+    def forward(self, s, d=None, z_override=None):
+        # ✅ 若给了 z_override，就直接用，不查 embedding
         if self.use_embedding:
-            z = self.emb(d); x = torch.cat([s,z],-1)
+            if (z_override is not None) and self.allow_override:
+                z = z_override
+            else:
+                z = self.emb(d)
+            x = torch.cat([s, z], -1)
         else:
             x = s
-        out = self.net(x); m, lv = torch.chunk(out, 2, -1)
+
+        out = self.net(x)
+        m, lv = torch.chunk(out, 2, -1)
         return m, torch.clamp(lv, -4.0, 2.0)
+
 
 def nll_weighted(m, lv, y, W=None):
     per = 0.5*((y-m)**2/ lv.exp() + lv)  # [B, act_dim]
