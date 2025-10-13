@@ -173,33 +173,60 @@ nT = S_t.shape[0]
 
 # ---------------- Core helpers ----------------
 def get_z(driver_code: str):
-    """Return embedding vector z for a given driver code."""
+    """Return embedding vector z for a given driver code as [1, z_dim]."""
     idx = drv_to_id[driver_code]
     with torch.no_grad():
-        # grab embedding weight
-        z = model.emb.weight[idx:idx+1]   # [1, z_dim]
+        z = model.emb.weight[idx:idx+1]
     return z.to(device)
 
+
+def _fwd_with_z_override_or_bypass(S_step: torch.Tensor, z: torch.Tensor):
+    """
+    尝试优先用 model 的 z_override 接口；不行就手工绕过 embedding，
+    直接 [S, z] → model.net(...)，再按 PolicyNet 的方式切分 m/lv。
+    """
+    # 1) 尝试新签名：forward(s, d=None, z_override=z)
+    try:
+        return model(S_step, None, z_override=z)
+    except TypeError:
+        pass
+    except Exception:
+        pass
+
+    # 2) 兜底：直连 MLP
+    if hasattr(model, "net"):
+        x = torch.cat([S_step, z], dim=-1)        # [1, sd + z_dim]
+        out = model.net(x)                         # [1, ad*2]
+        m, lv = torch.chunk(out, 2, dim=-1)
+        lv = torch.clamp(lv, -4.0, 2.0)
+        return m, lv
+    else:
+        raise RuntimeError(
+            "Model does not expose z_override nor .net for bypass. "
+            "Please enable z_override in PolicyNet.forward."
+        )
+
+
 def step_nll_with_z(ti: int, z_override: torch.Tensor):
-    """NLL at a single step using a provided z_override."""
+    """NLL at a single step using a provided z_override (Hybrid/任意 z)."""
     with torch.no_grad():
-        # try new signature first
-        try:
-            m, lv = model(S_t[ti:ti+1], None, z_override=z_override)
-        except TypeError:
-            # fallback: monkey call if model not supporting z_override
-            # (not expected since you said you've added it)
-            m, lv = model(S_t[ti:ti+1], None)
+        S_step = S_t[ti:ti+1]
+        m, lv = _fwd_with_z_override_or_bypass(S_step, z_override)
         nll = nll_weighted(m, lv, A_t[ti:ti+1]).mean().item()
         return float(nll)
 
+
 def step_nll_with_driver_id(ti: int, driver_code: str):
-    """NLL at a single step using the driver's own embedding (by id)."""
+    """NLL using该车手自己的 embedding（通过 id 索引）"""
     d_id = drv_to_id[driver_code]
     with torch.no_grad():
-        m, lv = model(S_t[ti:ti+1], torch.tensor([d_id], device=device))
+        S_step = S_t[ti:ti+1]
+        # 一定要 long 索引
+        d_idx = torch.tensor([d_id], dtype=torch.long, device=device)
+        m, lv = model(S_step, d_idx)
         nll = nll_weighted(m, lv, A_t[ti:ti+1]).mean().item()
         return float(nll)
+    
 
 def step_similarities(ti: int, drvA: str, drvB: str, alpha: float):
     # classes nll
