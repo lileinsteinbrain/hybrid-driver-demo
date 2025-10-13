@@ -286,5 +286,97 @@ if play:
     except Exception:
         st.experimental_rerun()
 
+# =======================
+#  SEGMENT-BY-SEGMENT EXPLAIN
+# =======================
+
+def make_segments_by_phase(meta_df: pd.DataFrame, n_segs: int = 6):
+    """用 phase 等分切片，返回 [(start_idx, end_idx, seg_name), ...]"""
+    phases = meta_df["phase"].to_numpy() if "phase" in meta_df.columns else np.linspace(0, 1, len(meta_df))
+    idx = np.arange(len(phases))
+    edges = np.linspace(0.0, 1.0, n_segs + 1)
+    segs = []
+    for i in range(n_segs):
+        lo, hi = edges[i], edges[i+1]
+        m = (phases >= lo - 1e-9) & (phases <= hi + 1e-9)
+        rows = idx[m]
+        if len(rows) == 0:
+            continue
+        segs.append((rows.min(), rows.max()+1, f"S{i+1} {lo:.2f}-{hi:.2f}"))
+    return segs
+
+@st.cache_data(show_spinner=False)
+def _softmax(x):
+    x = np.array(x, dtype=np.float64)
+    x = x - x.min()  # 数值更稳
+    p = np.exp(-x)
+    return p / (p.sum() + 1e-12)
+
+def explain_one_segment(s_lo, s_hi, S_t, A_t, classes, drv_to_id, model, device):
+    """对一个时间段 [s_lo, s_hi) 计算每位车手的段内 NLL 与 similarity"""
+    with torch.no_grad():
+        sims, nlls = [], []
+        for name in classes:
+            d_id = drv_to_id[name]
+            d_vec = torch.full((s_hi - s_lo,), d_id, device=device, dtype=torch.long)
+            m, lv = model(S_t[s_lo:s_hi], d_vec)
+            nll = nll_weighted(m, lv, A_t[s_lo:s_hi]).mean().item()
+            nlls.append(nll)
+        probs = _softmax(nlls)
+        for i, name in enumerate(classes):
+            sims.append((name, probs[i], nlls[i]))
+        sims.sort(key=lambda x: x[1], reverse=True)
+        return sims  # [(name, sim, nll), ...]
+
+def action_summary(A_all, s_lo, s_hi, labels=("d_heading", "d_brake", "d_throttle")):
+    seg = A_all[s_lo:s_hi]
+    mean = seg.mean(axis=0)
+    std  = seg.std(axis=0)
+    return {labels[i]: (float(mean[i]), float(std[i])) for i in range(min(len(labels), seg.shape[1]))}
+
+st.markdown("---")
+st.subheader("Explain this lap (segment-by-segment)")
+n_segs = st.slider("How many segments", 4, 12, 6, help="先按 phase 等分切段；后续可换成赛道/弯角切分")
+if st.button("🧠 Explain current lap"):
+    # 1) 构造分段（优先用 meta['phase']；没有就等分）
+    if isinstance(meta, pd.DataFrame) and ("phase" in meta.columns):
+        segs = make_segments_by_phase(meta, n_segs=n_segs)
+    else:
+        L = S_t.shape[0]
+        cuts = np.linspace(0, L, n_segs+1).astype(int)
+        segs = [(int(cuts[i]), int(cuts[i+1]), f"S{i+1}") for i in range(n_segs) if cuts[i+1] > cuts[i]]
+
+    rows = []
+    for (s_lo, s_hi, seg_name) in segs:
+        sims = explain_one_segment(s_lo, s_hi, S_t, A_t, classes, drv_to_id, model, device)
+        top1, top2 = sims[0], sims[1] if len(sims) > 1 else ("-", 0.0, 0.0)
+        # 置信度：Top1 与 Top2 概率差
+        conf = float(top1[1] - (top2[1] if isinstance(top2, tuple) else 0.0))
+        # 动作统计
+        summ = action_summary(A_all, s_lo, s_hi)
+        rows.append({
+            "segment": seg_name,
+            "len": int(s_hi - s_lo),
+            "top1_driver": top1[0],
+            "top1_sim": round(float(top1[1]), 3),
+            "top2_driver": top2[0] if isinstance(top2, tuple) else "-",
+            "top2_sim": round(float(top2[1]), 3) if isinstance(top2, tuple) else 0.0,
+            "confidence": round(conf, 3),
+            # 简要动作均值（可展开更多字段）
+            "μ d_head": round(summ.get("d_heading", (0,0))[0], 3),
+            "μ d_brake": round(summ.get("d_brake", (0,0))[0], 3),
+            "μ d_thr": round(summ.get("d_throttle", (0,0))[0], 3),
+        })
+
+    df_explain = pd.DataFrame(rows, columns=[
+        "segment","len","top1_driver","top1_sim","top2_driver","top2_sim","confidence",
+        "μ d_head","μ d_brake","μ d_thr"
+    ])
+    st.dataframe(df_explain, use_container_width=True)
+
+    # 一个小的可视化：每段 top1
+    st.caption("Top1 driver by segment")
+    st.bar_chart(df_explain.set_index("segment")[["top1_sim"]])
+
 st.info("Similarity = exp(-NLL). We show class sims and also the **Hybrid(A,B,α)** sim computed via z_mix = α·z_A + (1-α)·z_B.")
 st.caption("Quali only for now. Race & user-upload CSV will come next.")
