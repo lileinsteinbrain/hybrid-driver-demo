@@ -448,13 +448,17 @@ else:
             "segment","len","top1_driver","top1_sim","top2_driver","top2_sim","confidence",
             "μ d_head","μ d_brake","μ d_thr"
         ])
-        st.dataframe(df_explain, use_container_width=True)
-        st.caption("Top1 driver by segment")
-        st.bar_chart(df_explain.set_index("segment")[["top1_sim"]])
+       st.dataframe(df_explain, use_container_width=True)
+       st.caption("Top1 driver by segment")
+       st.bar_chart(df_explain.set_index("segment")[["top1_sim"]])
 
-        # —— 自然语言摘要（新增）——
-        st.markdown("#### Narrative / 文本说明")
-        st.markdown(explain_segments_text(df_explain, lang=lang))
+# === 自然语言摘要（新增，强制显示在表格/柱状图后面）===
+       st.markdown("#### Narrative / 文本说明")
+       summary_text = explain_segments_text(df_explain, lang=lang)  # lang 来自侧栏 Language / 语言
+       if lang == "English":
+           st.info(summary_text or "No segment summary produced.")
+       else:
+           st.info(summary_text or "本圈未生成段落摘要。")
 
 st.info("Similarity = exp(-NLL). We show class sims and also the **Hybrid(A,B,α)** sim computed via z_mix = α·z_A + (1-α)·z_B.")
 st.caption("Quali only for now. Race & user-upload CSV will come next.")
