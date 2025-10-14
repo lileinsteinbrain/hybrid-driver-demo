@@ -1,8 +1,5 @@
-# app_hybrid.py  — Hybrid demo (Qualifying only)
-import os
-import sys
-import time
-import json
+# app_hybrid.py  — Hybrid demo (Qualifying only) + segment explain + optional CSV upload
+import os, sys, time, json
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -32,6 +29,96 @@ from utils_fp import (
     collect_driver_laps_resampled, build_dataset
 )
 
+# -------- feature helper for USER CSV (optional) --------
+def make_features_from_csv(df_raw: pd.DataFrame, n_pts: int = 220):
+    """
+    期望列：
+      - 必需：time_s, speed_kph, throttle(0-100), brake(0/1 或 0-100)
+      - 可选：x, y（用于算 heading / a_lat），distance（没有就由速度积分）
+    生成与你训练一致的特征：
+      S: [phase, v/90, tanh(a_lat/6), tanh(a_long/5), tanh(mu_proxy/9.81)]
+      A: [d_heading, d_brake, d_throttle]
+      并在 phase∈[0,1] 的均匀网格上重采样到 n_pts。
+    """
+    for col in ["time_s","speed_kph","throttle","brake"]:
+        if col not in df_raw.columns:
+            raise ValueError(f"CSV missing column: {col}")
+
+    t = df_raw["time_s"].to_numpy().astype(float)
+    v = df_raw["speed_kph"].to_numpy().astype(float) * 1000/3600.0
+    thr = df_raw["throttle"].to_numpy().astype(float) / 100.0
+    brk = df_raw["brake"].to_numpy().astype(float)
+    brk = np.where(brk > 1.0, brk/100.0, brk)  # 兼容 0/100 填法
+    brk = np.clip(brk, 0.0, 1.0)
+
+    # distance（若无则简单用速度积分近似）
+    if "distance" in df_raw.columns:
+        dist = df_raw["distance"].to_numpy().astype(float)
+    else:
+        dt = np.diff(t, prepend=t[0])
+        dt[0] = dt[1] if len(dt)>1 else 0.01
+        dist = np.cumsum(v * dt)
+
+    # phase
+    L = max(1e-6, (np.nanmax(dist) - np.nanmin(dist)))
+    phase = (dist - np.nanmin(dist)) / L
+    phase = np.clip(phase, 0, 1)
+
+    # a_long
+    a_long = np.gradient(v, t)
+
+    # heading / a_lat（只有 x,y 时才能较准；否则置 0）
+    if ("x" in df_raw.columns) and ("y" in df_raw.columns):
+        x = df_raw["x"].to_numpy().astype(float)
+        y = df_raw["y"].to_numpy().astype(float)
+        vx = np.gradient(x, t); vy = np.gradient(y, t)
+        heading = np.unwrap(np.arctan2(vy, vx))
+        ds = np.clip(np.gradient(dist), 1e-3, None)
+        kappa = np.gradient(heading)/ds
+        a_lat = (v**2) * kappa
+        d_head = np.gradient(heading, t)
+    else:
+        a_lat = np.zeros_like(v)
+        d_head = np.zeros_like(v)
+
+    d_thr = np.gradient(thr, t)
+    d_brk = np.gradient(brk, t)
+    mu_proxy = np.sqrt(a_lat**2 + a_long**2)
+
+    # 重采样至固定网格
+    def _resample(x_phase, y, grid):
+        m = ~(np.isnan(x_phase) | np.isnan(y))
+        if m.sum() < 8: return None
+        x0, y0 = x_phase[m], y[m]
+        o = np.argsort(x0); x1, y1 = x0[o], y0[o]
+        x2, idx = np.unique(x1, return_index=True); y2 = y1[idx]
+        return np.interp(grid, x2, y2)
+
+    grid = np.linspace(0, 1, n_pts)
+    feats = [
+        phase,
+        v/90.0,
+        np.tanh(a_lat/6.0),
+        np.tanh(a_long/5.0),
+        np.tanh(mu_proxy/9.81)
+    ]
+    acts = [d_head, d_brk, d_thr]
+
+    S_parts, A_parts = [], []
+    for arr in feats:
+        ri = _resample(phase, arr, grid); 
+        if ri is None: return None, None, None
+        S_parts.append(ri)
+    for arr in acts:
+        ri = _resample(phase, arr, grid); 
+        if ri is None: return None, None, None
+        A_parts.append(ri)
+
+    S = np.stack(S_parts,1).astype(np.float32)
+    A = np.stack(A_parts,1).astype(np.float32)
+    M = pd.DataFrame({"driver":"USER","phase":grid})
+    return [S], [A], [M]
+
 # ==== Streamlit page ====
 st.set_page_config(page_title="Hybrid Driver Demo", layout="wide")
 st.sidebar.title("Hybrid Demo")
@@ -40,20 +127,8 @@ st.sidebar.caption("Real telemetry → similarity vs driver fingerprints (with H
 # ---------------- Session selector ----------------
 YEAR_OPTS = [2023, 2024]
 EVENT_BY_YEAR = {
-    2023: [
-        "British Grand Prix",
-        "United States Grand Prix",
-        "Australian Grand Prix",
-        "Bahrain Grand Prix",
-        "Brazilian Grand Prix",
-    ],
-    2024: [
-        "British Grand Prix",
-        "United States Grand Prix",
-        "Australian Grand Prix",
-        "Bahrain Grand Prix",
-        "Brazilian Grand Prix",
-    ],
+    2023: ["British Grand Prix","United States Grand Prix","Australian Grand Prix","Bahrain Grand Prix","Brazilian Grand Prix"],
+    2024: ["British Grand Prix","United States Grand Prix","Australian Grand Prix","Bahrain Grand Prix","Brazilian Grand Prix"],
 }
 
 with st.sidebar.expander("Session"):
@@ -92,22 +167,34 @@ with st.sidebar.expander("Hybrid mix"):
         drv_B = st.selectbox("Driver B", classes, index=1)
     alpha = st.slider("α (A weight)", 0.0, 1.0, 0.5, 0.05)
 
+# ---------------- Data source ----------------
+ENABLE_USER_UPLOAD = True
+user_csv = None
+if ENABLE_USER_UPLOAD:
+    with st.sidebar.expander("Data source"):
+        source = st.radio("Telemetry source", ["FastF1 (official)", "Upload CSV"], index=0)
+        if source == "Upload CSV":
+            user_csv = st.file_uploader(
+                "Upload lap CSV (cols: time_s, speed_kph, throttle, brake, optional x,y,distance)",
+                type=["csv"]
+            )
+
 st.title("Hybrid Driver Similarity — Qualifying Telemetry vs Driver Fingerprints")
 st.caption("Pick session & telemetry, then mix **Driver A/B** with α to generate a *Hybrid fingerprint* in real-time.")
 
-# ---------------- Load session ----------------
+# ---------------- Load session or user CSV ----------------
 @st.cache_data(show_spinner=True, ttl=3600)
 def load_session(year: int, gp_name: str):
     sess = fastf1.get_session(year, gp_name, "Q")
     sess.load()
     return sess
 
-session = load_session(year, event_name)
+if (user_csv is None) or (not ENABLE_USER_UPLOAD) or (source == "FastF1 (official)"):
+    session = load_session(year, event_name)
 
 # ---------------- Collect laps (resampled) ----------------
 @st.cache_data(show_spinner=True, ttl=900)
 def get_resampled_laps(_session, codes, n_pts=220, max_laps=3):
-    # underscore to avoid streamlit hashing the Session object
     packs = {}
     for code in codes:
         try:
@@ -119,13 +206,34 @@ def get_resampled_laps(_session, codes, n_pts=220, max_laps=3):
         packs[code] = (S_list, A_list, M_list)
     return packs
 
-packs = get_resampled_laps(session, classes, n_pts=220, max_laps=3)
+packs = None
+if (user_csv is None) or (source == "FastF1 (official)"):
+    packs = get_resampled_laps(session, classes, n_pts=220, max_laps=3)
 
 # Telemetry driver + which lap
 c1, c2 = st.columns([2, 1])
+if (user_csv is not None) and (source == "Upload CSV"):
+    telem_options = ["USER"] + classes  # 允许“USER”作为源，也可切到官方某车手
+else:
+    telem_options = classes
+
 with c1:
-    telem_drv = st.selectbox("Pick a driver (telemetry source)", classes, index=0)
-S_list, A_list, M_list = packs.get(telem_drv, ([], [], []))
+    telem_drv = st.selectbox("Pick a driver (telemetry source)", telem_options, index=0)
+
+# 取 S/A/M
+if telem_drv == "USER":
+    try:
+        df_u = pd.read_csv(user_csv)
+        S_list, A_list, M_list = make_features_from_csv(df_u, n_pts=220)
+        if (S_list is None) or (len(S_list)==0):
+            st.error("CSV 解析失败：信号不足或缺字段。请检查列名/数据质量。")
+            st.stop()
+    except Exception as e:
+        st.error(f"CSV 解析失败：{e}")
+        st.stop()
+else:
+    S_list, A_list, M_list = packs.get(telem_drv, ([], [], []))
+
 with c2:
     avail = len(S_list)
     lap_idx = st.number_input("Lap index (fastest-first)", min_value=0, max_value=max(0, avail-1), value=0, step=1)
@@ -149,8 +257,7 @@ model = PolicyNet(sd=sd, ad=ad, n=len(classes), z_dim=best_z, hidden=96, use_emb
 if os.path.exists(MODEL_PATH):
     try:
         state = torch.load(MODEL_PATH, map_location="cpu")
-        # allow slight key mismatch
-        model.load_state_dict(state, strict=False)
+        model.load_state_dict(state, strict=False)  # allow slight key mismatch
     except Exception as e:
         st.warning(f"Loading state_dict for PolicyNet: size mismatch (already handled); detail: {e}")
 else:
@@ -173,80 +280,51 @@ nT = S_t.shape[0]
 
 # ---------------- Core helpers ----------------
 def get_z(driver_code: str):
-    """Return embedding vector z for a given driver code as [1, z_dim]."""
     idx = drv_to_id[driver_code]
     with torch.no_grad():
         z = model.emb.weight[idx:idx+1]
     return z.to(device)
 
-
 def _fwd_with_z_override_or_bypass(S_step: torch.Tensor, z: torch.Tensor):
-    """
-    尝试优先用 model 的 z_override 接口；不行就手工绕过 embedding，
-    直接 [S, z] → model.net(...)，再按 PolicyNet 的方式切分 m/lv。
-    """
-    # 1) 尝试新签名：forward(s, d=None, z_override=z)
     try:
-        return model(S_step, None, z_override=z)
+        return model(S_step, None, z_override=z)  # 若你的 PolicyNet.forward 支持
     except TypeError:
         pass
     except Exception:
         pass
-
-    # 2) 兜底：直连 MLP
     if hasattr(model, "net"):
-        x = torch.cat([S_step, z], dim=-1)        # [1, sd + z_dim]
-        out = model.net(x)                         # [1, ad*2]
+        x = torch.cat([S_step, z], dim=-1)
+        out = model.net(x)
         m, lv = torch.chunk(out, 2, dim=-1)
         lv = torch.clamp(lv, -4.0, 2.0)
         return m, lv
     else:
-        raise RuntimeError(
-            "Model does not expose z_override nor .net for bypass. "
-            "Please enable z_override in PolicyNet.forward."
-        )
-
+        raise RuntimeError("Model does not expose z_override nor .net for bypass. Enable z_override in PolicyNet.forward.")
 
 def step_nll_with_z(ti: int, z_override: torch.Tensor):
-    """NLL at a single step using a provided z_override (Hybrid/任意 z)."""
     with torch.no_grad():
         S_step = S_t[ti:ti+1]
         m, lv = _fwd_with_z_override_or_bypass(S_step, z_override)
         nll = nll_weighted(m, lv, A_t[ti:ti+1]).mean().item()
         return float(nll)
 
-
 def step_nll_with_driver_id(ti: int, driver_code: str):
-    """NLL using该车手自己的 embedding（通过 id 索引）"""
     d_id = drv_to_id[driver_code]
     with torch.no_grad():
         S_step = S_t[ti:ti+1]
-        # 一定要 long 索引
         d_idx = torch.tensor([d_id], dtype=torch.long, device=device)
         m, lv = model(S_step, d_idx)
         nll = nll_weighted(m, lv, A_t[ti:ti+1]).mean().item()
         return float(nll)
-    
 
 def step_similarities(ti: int, drvA: str, drvB: str, alpha: float):
-    # classes nll
-    nlls = []
-    for name in classes:
-        nlls.append(step_nll_with_driver_id(ti, name))
+    nlls = [step_nll_with_driver_id(ti, name) for name in classes]
     nlls = np.array(nlls, dtype=np.float64)
-
-    # hybrid nll
-    zA = get_z(drvA)
-    zB = get_z(drvB)
+    zA = get_z(drvA); zB = get_z(drvB)
     z_mix = alpha * zA + (1.0 - alpha) * zB
     nll_h = step_nll_with_z(ti, z_mix)
-
-    # convert to exp(-NLL)
-    sim = np.exp(-nlls)
-    sim = sim / (sim.sum() + 1e-9)
+    sim = np.exp(-nlls); sim = sim / (sim.sum() + 1e-9)
     sim_h = float(np.exp(-nll_h))
-
-    # bar entries (classes + hybrid)
     labels = classes + [f"Hybrid[{drvA}/{drvB}|α={alpha:.2f}]"]
     values = list(sim) + [sim_h]
     return labels, values
@@ -258,11 +336,11 @@ with ctrl_col:
         st.session_state.t_idx = 0
     play = st.toggle("▶ Play", value=True)
 
-labels, values = step_similarities(st.session_state.t_idx, drv_A, drv_B, alpha)
+labels_bar, values_bar = step_similarities(st.session_state.t_idx, drv_A, drv_B, alpha)
 
 with bar_col:
     st.subheader("Live similarity (higher = closer to fingerprint)")
-    df_bar = pd.DataFrame({"driver": labels, "similarity": values})
+    df_bar = pd.DataFrame({"driver": labels_bar, "similarity": values_bar})
     st.bar_chart(df_bar.set_index("driver"))
 
 # bottom curves
@@ -287,9 +365,11 @@ if play:
         st.experimental_rerun()
 
 # =======================
-#  SEGMENT-BY-SEGMENT EXPLAIN (DEBUG banner)
+#  SEGMENT-BY-SEGMENT EXPLAIN
 # =======================
-st.markdown("### 🔧 DEBUG: Explain block is LOADED")
+st.markdown("---")
+st.subheader("Explain this lap (segment-by-segment)")
+n_segs = st.slider("How many segments", 4, 12, 6, help="按 phase 等分切段；后续可换成赛道/弯角切分")
 
 def make_segments_by_phase(meta_df: pd.DataFrame, n_segs: int = 6):
     phases = meta_df["phase"].to_numpy() if isinstance(meta_df, pd.DataFrame) and ("phase" in meta_df.columns) else np.linspace(0, 1, len(meta_df))
@@ -300,8 +380,7 @@ def make_segments_by_phase(meta_df: pd.DataFrame, n_segs: int = 6):
         lo, hi = edges[i], edges[i+1]
         m = (phases >= lo - 1e-9) & (phases <= hi + 1e-9)
         rows = idx[m]
-        if len(rows) == 0:
-            continue
+        if len(rows) == 0: continue
         segs.append((rows.min(), rows.max()+1, f"S{i+1} {lo:.2f}-{hi:.2f}"))
     return segs
 
@@ -328,50 +407,41 @@ def explain_one_segment(s_lo, s_hi, S_t, A_t, classes, drv_to_id, model, device)
 
 def action_summary(A_all, s_lo, s_hi, labels=("d_heading", "d_brake", "d_throttle")):
     seg = A_all[s_lo:s_hi]
-    mean = seg.mean(axis=0)
-    std  = seg.std(axis=0)
+    mean = seg.mean(axis=0); std  = seg.std(axis=0)
     return {labels[i]: (float(mean[i]), float(std[i])) for i in range(min(len(labels), seg.shape[1]))}
 
-st.markdown("---")
-st.subheader("Explain this lap (segment-by-segment)")
-n_segs = st.slider("How many segments", 4, 12, 6, help="按 phase 等分切段；后续可换成赛道/弯角切分")
-
-if st.button("🧠 Explain current lap"):
-    # 1) 构造分段
-    if isinstance(meta, pd.DataFrame) and ("phase" in meta.columns):
-        segs = make_segments_by_phase(meta, n_segs=n_segs)
-    else:
-        L = S_t.shape[0]
-        cuts = np.linspace(0, L, n_segs+1).astype(int)
-        segs = [(int(cuts[i]), int(cuts[i+1]), f"S{i+1}") for i in range(n_segs) if cuts[i+1] > cuts[i]]
-
-    rows = []
-    for (s_lo, s_hi, seg_name) in segs:
-        sims = explain_one_segment(s_lo, s_hi, S_t, A_t, classes, drv_to_id, model, device)
-        top1, top2 = sims[0], sims[1] if len(sims) > 1 else ("-", 0.0, 0.0)
-        conf = float(top1[1] - (top2[1] if isinstance(top2, tuple) else 0.0))
-        summ = action_summary(A_all, s_lo, s_hi)
-        rows.append({
-            "segment": seg_name,
-            "len": int(s_hi - s_lo),
-            "top1_driver": top1[0],
-            "top1_sim": round(float(top1[1]), 3),
-            "top2_driver": top2[0] if isinstance(top2, tuple) else "-",
-            "top2_sim": round(float(top2[1]), 3) if isinstance(top2, tuple) else 0.0,
-            "confidence": round(conf, 3),
-            "μ d_head": round(summ.get("d_heading", (0,0))[0], 3),
-            "μ d_brake": round(summ.get("d_brake", (0,0))[0], 3),
-            "μ d_thr": round(summ.get("d_throttle", (0,0))[0], 3),
-        })
-
-    df_explain = pd.DataFrame(rows, columns=[
-        "segment","len","top1_driver","top1_sim","top2_driver","top2_sim","confidence",
-        "μ d_head","μ d_brake","μ d_thr"
-    ])
-    st.dataframe(df_explain, use_container_width=True)
-    st.caption("Top1 driver by segment")
-    st.bar_chart(df_explain.set_index("segment")[["top1_sim"]])
-
+if play:
+    st.info("⏸ 暂停播放以运行 Explain。")
+else:
+    if st.button("🧠 Explain current lap"):
+        segs = make_segments_by_phase(meta, n_segs=n_segs) if (isinstance(meta, pd.DataFrame) and ("phase" in meta.columns)) \
+               else [(int(c), int(d), f"S{i+1}") for i,(c,d) in enumerate(zip(np.linspace(0,S_t.shape[0],n_segs+1,dtype=int)[:-1],
+                                                                              np.linspace(0,S_t.shape[0],n_segs+1,dtype=int)[1:])) if d>c]
+        rows = []
+        for (s_lo, s_hi, seg_name) in segs:
+            sims = explain_one_segment(s_lo, s_hi, S_t, A_t, classes, drv_to_id, model, device)
+            top1, top2 = sims[0], (sims[1] if len(sims) > 1 else ("-", 0.0, 0.0))
+            conf = float(top1[1] - (top2[1] if isinstance(top2, tuple) else 0.0))
+            summ = action_summary(A_all, s_lo, s_hi)
+            rows.append({
+                "segment": seg_name,
+                "len": int(s_hi - s_lo),
+                "top1_driver": top1[0],
+                "top1_sim": round(float(top1[1]), 3),
+                "top2_driver": top2[0] if isinstance(top2, tuple) else "-",
+                "top2_sim": round(float(top2[1]), 3) if isinstance(top2, tuple) else 0.0,
+                "confidence": round(conf, 3),
+                "μ d_head": round(summ.get("d_heading", (0,0))[0], 3),
+                "μ d_brake": round(summ.get("d_brake", (0,0))[0], 3),
+                "μ d_thr": round(summ.get("d_throttle", (0,0))[0], 3),
+            })
+        df_explain = pd.DataFrame(rows, columns=[
+            "segment","len","top1_driver","top1_sim","top2_driver","top2_sim","confidence",
+            "μ d_head","μ d_brake","μ d_thr"
+        ])
+        st.dataframe(df_explain, use_container_width=True)
+        st.caption("Top1 driver by segment")
+        st.bar_chart(df_explain.set_index("segment")[["top1_sim"]])
 
 st.info("Similarity = exp(-NLL). We show class sims and also the **Hybrid(A,B,α)** sim computed via z_mix = α·z_A + (1-α)·z_B.")
 st.caption("Quali only for now. Race & user-upload CSV will come next.")
