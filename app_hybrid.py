@@ -38,7 +38,7 @@ def make_features_from_csv(df_raw: pd.DataFrame, n_pts: int = 220):
     生成与你训练一致的特征：
       S: [phase, v/90, tanh(a_lat/6), tanh(a_long/5), tanh(mu_proxy/9.81)]
       A: [d_heading, d_brake, d_throttle]
-      并在 phase∈[0,1] 的均匀网格上重采样到 n_pts。
+      并在 phase∈[0,1] 的均匀网格上重采样到 220 点。
     """
     for col in ["time_s","speed_kph","throttle","brake"]:
         if col not in df_raw.columns:
@@ -48,10 +48,10 @@ def make_features_from_csv(df_raw: pd.DataFrame, n_pts: int = 220):
     v = df_raw["speed_kph"].to_numpy().astype(float) * 1000/3600.0
     thr = df_raw["throttle"].to_numpy().astype(float) / 100.0
     brk = df_raw["brake"].to_numpy().astype(float)
-    brk = np.where(brk > 1.0, brk/100.0, brk)  # 兼容 0/100 填法
+    brk = np.where(brk > 1.0, brk/100.0, brk)  # 兼容 0/100
     brk = np.clip(brk, 0.0, 1.0)
 
-    # distance（若无则简单用速度积分近似）
+    # distance（若无则由速度积分近似）
     if "distance" in df_raw.columns:
         dist = df_raw["distance"].to_numpy().astype(float)
     else:
@@ -67,7 +67,7 @@ def make_features_from_csv(df_raw: pd.DataFrame, n_pts: int = 220):
     # a_long
     a_long = np.gradient(v, t)
 
-    # heading / a_lat（只有 x,y 时才能较准；否则置 0）
+    # heading / a_lat（只有 x,y 时较准；否则置 0）
     if ("x" in df_raw.columns) and ("y" in df_raw.columns):
         x = df_raw["x"].to_numpy().astype(float)
         y = df_raw["y"].to_numpy().astype(float)
@@ -95,22 +95,16 @@ def make_features_from_csv(df_raw: pd.DataFrame, n_pts: int = 220):
         return np.interp(grid, x2, y2)
 
     grid = np.linspace(0, 1, n_pts)
-    feats = [
-        phase,
-        v/90.0,
-        np.tanh(a_lat/6.0),
-        np.tanh(a_long/5.0),
-        np.tanh(mu_proxy/9.81)
-    ]
-    acts = [d_head, d_brk, d_thr]
+    feats = [phase, v/90.0, np.tanh(a_lat/6.0), np.tanh(a_long/5.0), np.tanh(mu_proxy/9.81)]
+    acts  = [d_head, d_brk, d_thr]
 
     S_parts, A_parts = [], []
     for arr in feats:
-        ri = _resample(phase, arr, grid); 
+        ri = _resample(phase, arr, grid)
         if ri is None: return None, None, None
         S_parts.append(ri)
     for arr in acts:
-        ri = _resample(phase, arr, grid); 
+        ri = _resample(phase, arr, grid)
         if ri is None: return None, None, None
         A_parts.append(ri)
 
@@ -167,17 +161,17 @@ with st.sidebar.expander("Hybrid mix"):
         drv_B = st.selectbox("Driver B", classes, index=1)
     alpha = st.slider("α (A weight)", 0.0, 1.0, 0.5, 0.05)
 
-# ---------------- Data source ----------------
+# ---------------- Data source + Language ----------------
 ENABLE_USER_UPLOAD = True
 user_csv = None
-if ENABLE_USER_UPLOAD:
-    with st.sidebar.expander("Data source"):
-        source = st.radio("Telemetry source", ["FastF1 (official)", "Upload CSV"], index=0)
-        if source == "Upload CSV":
-            user_csv = st.file_uploader(
-                "Upload lap CSV (cols: time_s, speed_kph, throttle, brake, optional x,y,distance)",
-                type=["csv"]
-            )
+with st.sidebar.expander("Data source"):
+    source = st.radio("Telemetry source", ["FastF1 (official)", "Upload CSV"], index=0)
+    lang = st.radio("Language / 语言", ["English", "中文"], index=1, horizontal=True)
+    if ENABLE_USER_UPLOAD and source == "Upload CSV":
+        user_csv = st.file_uploader(
+            "Upload lap CSV (cols: time_s, speed_kph, throttle, brake, optional x,y,distance)",
+            type=["csv"]
+        )
 
 st.title("Hybrid Driver Similarity — Qualifying Telemetry vs Driver Fingerprints")
 st.caption("Pick session & telemetry, then mix **Driver A/B** with α to generate a *Hybrid fingerprint* in real-time.")
@@ -405,10 +399,25 @@ def explain_one_segment(s_lo, s_hi, S_t, A_t, classes, drv_to_id, model, device)
         sims.sort(key=lambda x: x[1], reverse=True)
         return sims
 
+# —— 维持你原来的均值/方差统计，不改口径 —— 
 def action_summary(A_all, s_lo, s_hi, labels=("d_heading", "d_brake", "d_throttle")):
     seg = A_all[s_lo:s_hi]
     mean = seg.mean(axis=0); std  = seg.std(axis=0)
     return {labels[i]: (float(mean[i]), float(std[i])) for i in range(min(len(labels), seg.shape[1]))}
+
+# —— 自然语言生成（新增）——
+def explain_segments_text(df_explain: pd.DataFrame, lang: str = "中文"):
+    lines = []
+    for _, r in df_explain.iterrows():
+        seg = str(r["segment"])
+        d1, s1 = r["top1_driver"], r["top1_sim"]
+        d2     = r["top2_driver"]
+        conf   = r["confidence"]
+        if lang == "English":
+            lines.append(f"{seg}: most similar to **{d1}** (sim={s1:.3f}, Δ={conf:.3f} vs {d2}).")
+        else:
+            lines.append(f"{seg} 段：**最像 {d1}**（相似度 {s1:.3f}，领先 {d2} {conf:.3f}）。")
+    return "\n".join(lines)
 
 if play:
     st.info("⏸ 暂停播放以运行 Explain。")
@@ -442,6 +451,10 @@ else:
         st.dataframe(df_explain, use_container_width=True)
         st.caption("Top1 driver by segment")
         st.bar_chart(df_explain.set_index("segment")[["top1_sim"]])
+
+        # —— 自然语言摘要（新增）——
+        st.markdown("#### Narrative / 文本说明")
+        st.markdown(explain_segments_text(df_explain, lang=lang))
 
 st.info("Similarity = exp(-NLL). We show class sims and also the **Hybrid(A,B,α)** sim computed via z_mix = α·z_A + (1-α)·z_B.")
 st.caption("Quali only for now. Race & user-upload CSV will come next.")
