@@ -3,6 +3,8 @@ import os, sys, time, json
 import numpy as np
 import pandas as pd
 import streamlit as st
+import requests, os
+LIVE_URL = os.environ.get("LIVE_PUSH_URL", "http://localhost:8000/push")
 
 # ==== render backend safe ====
 os.environ.setdefault("MPLBACKEND", "Agg")
@@ -336,6 +338,32 @@ with bar_col:
     st.subheader("Live similarity (higher = closer to fingerprint)")
     df_bar = pd.DataFrame({"driver": labels_bar, "similarity": values_bar})
     st.bar_chart(df_bar.set_index("driver"))
+
+def push_live_frame(t_idx, alpha, drv_A, drv_B, A_all_row, sim_labels, sim_values):
+    sim = {k: float(v) for k,v in zip(sim_labels, sim_values)}
+    feat = {
+        "d_head": float(A_all_row[0]),
+        "d_brake": float(A_all_row[1]),
+        "d_thr": float(A_all_row[2]),
+    }
+    payload = {
+        "t": int(t_idx),
+        "alpha": float(alpha),
+        "driverA": drv_A,
+        "driverB": drv_B,
+        "features": feat,
+        "sim": sim,
+    }
+    try:
+        requests.post(LIVE_URL, json=payload, timeout=0.2)
+    except Exception:
+        pass
+
+# 计算好 labels_bar / values_bar 后，加：
+push_live_frame(
+    st.session_state.t_idx, alpha, drv_A, drv_B,
+    A_all[st.session_state.t_idx], labels_bar, values_bar
+)
 
 # bottom curves
 st.subheader(f"Lap playback — step {st.session_state.t_idx+1}/{nT}  |  Event: {event_name} {year} (Q)")
