@@ -1,0 +1,25 @@
+# 通用垃圾
+.DS_Store
+__pycache__/
+*.pyc
+*.ipynb
+.venv/
+.env
+
+# Git 历史 / CI
+.git/
+.github/
+
+# 我们本地/云端的 FastF1 缓存、数据、结果都不要打进镜像
+data/**
+driver-fingerprint/results/**
+
+# 但保留模型与摘要（允许打进镜像）
+!driver-fingerprint/results/integration_Q5/model.pth
+!driver-fingerprint/results/integration_Q5/summary_integration.json
+
+# 其它可能的大文件
+*.csv
+*.parquet
+*.pth
+*.pt
