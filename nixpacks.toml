@@ -1,0 +1,12 @@
+[phases.setup]
+# Railway 用 Nix 安装 Python
+nixPkgs = ["python311", "pip"]
+
+[phases.install]
+cmds = [
+  "pip install --upgrade pip",
+  "pip install -r requirements.txt"
+]
+
+[start]
+cmd = "streamlit run app_hybrid.py --server.port $PORT --server.address 0.0.0.0"
