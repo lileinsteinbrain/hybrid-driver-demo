@@ -163,6 +163,13 @@ with st.sidebar.expander("Hybrid mix"):
         drv_B = st.selectbox("Driver B", classes, index=1)
     alpha = st.slider("α (A weight)", 0.0, 1.0, 0.5, 0.05)
 
+# --- Live Stage link (open the music page with current params) ---
+LIVE_STAGE_BASE = "https://lileinsteinbrain.github.io/hybrid-driver-demo/index.html"
+
+live_url = f"{LIVE_STAGE_BASE}?a={drv_A}&b={drv_B}&alpha={alpha:.2f}"
+st.sidebar.link_button("🎧 Open Live Stage (music)", live_url, type="primary")
+st.sidebar.caption("The music page runs in your browser (WebAudio/Tone.js). Use α to hear the hybrid mix.")
+
 # ---------------- Data source + Language ----------------
 ENABLE_USER_UPLOAD = True
 user_csv = None
