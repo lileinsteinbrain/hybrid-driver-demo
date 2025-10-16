@@ -1,286 +1,185 @@
-
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8"/>
-  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <meta charset="utf-8" />
   <title>Hybrid Live Stage</title>
-  <script src="https://unpkg.com/tone@14.8.49/build/Tone.js"></script>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <!-- 迷你样式，页面自带，无需外链 -->
   <style>
-    body{background:#0e1117;color:#e5e7eb;font-family:system-ui,Segoe UI,Roboto,Arial;margin:0;padding:24px}
-    h1{margin:0 0 8px;font-size:20px}
-    .row{display:flex;flex-wrap:wrap;gap:12px;margin:12px 0}
-    .card{background:#161a22;border:1px solid #2b3240;border-radius:10px;padding:14px;min-width:260px}
-    label{font-size:12px;opacity:.9}
+    :root{--bg:#0f1217;--panel:#1a1f27;--fg:#e9edf1;--sub:#a9b2be;--acc:#4c8bf5}
+    *{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.4 system-ui, -apple-system, Segoe UI, Roboto}
+    .wrap{max-width:900px;margin:28px auto;padding:0 16px}
+    h1{display:flex;align-items:center;gap:10px;font-size:28px;margin:0 0 12px}
+    .badge{background:#22304a;color:#92b0ff;padding:2px 8px;border-radius:999px;font-weight:600;margin-left:10px}
+    .note{color:var(--sub);margin-bottom:16px}
+    .card{background:var(--panel);border-radius:12px;padding:16px;margin:14px 0;box-shadow:0 4px 18px rgba(0,0,0,.25)}
+    .row{display:flex;gap:12px;flex-wrap:wrap}
+    .btn{background:var(--acc);color:white;border:0;border-radius:10px;padding:10px 16px;font-weight:700;cursor:pointer}
+    .btn.ghost{background:transparent;outline:1px solid #2b3646;color:#c7d2e3}
+    label{display:block;color:var(--sub);margin:8px 0 6px}
     input[type=range]{width:100%}
-    .btn{background:#2563eb;border:0;color:#fff;padding:10px 16px;border-radius:8px;cursor:pointer}
-    .btn:disabled{opacity:.6;cursor:not-allowed}
-    .muted{opacity:.8;font-size:12px}
-    .pill{background:#1f2937;border-radius:999px;padding:4px 10px;font-size:12px;margin-left:6px}
+    .grid{display:grid;grid-template-columns:1fr;gap:18px}
+    @media (min-width:760px){.grid{grid-template-columns:1fr 1fr}}
+    .footer{color:#7f8a99;font-size:14px;margin-top:18px}
+    .head{display:flex;align-items:center;gap:10px}
+    .alpha{font-weight:700;color:#9fd4ff}
   </style>
 </head>
 <body>
-  <h1>🎧 Hybrid Live Stage <span id="pill" class="pill"></span></h1>
-  <div class="muted">Browser audio needs a click to start. This page is standalone (no backend).</div>
+  <div class="wrap">
+    <div class="head">
+      <h1>🎧 Hybrid Live Stage</h1>
+      <span id="who" class="badge">A=NOR B=RUS</span>
+    </div>
+    <div class="note">Browser audio needs a click. This page is standalone (no backend).</div>
 
-  <div class="row">
+    <!-- Transport -->
     <div class="card">
-      <button id="start" class="btn">Start audio</button>
-      <button id="stop"  class="btn" style="background:#374151;margin-left:8px;">Stop</button>
-      <div style="height:10px"></div>
-      <label>BPM: <span id="bpmV">120</span></label>
-      <input id="bpm" type="range" min="60" max="180" value="120"/>
-      <label>α (A weight): <span id="aV">0.50</span></label>
-      <input id="alpha" type="range" min="0" max="1" step="0.01" value="0.50"/>
+      <div class="row" style="gap:10px">
+        <button id="btnStart" class="btn">Start audio</button>
+        <button id="btnStop" class="btn ghost">Stop</button>
+        <span id="status" class="note"></span>
+      </div>
+      <label>BPM: <span id="bpmText">130</span></label>
+      <input id="bpm" type="range" min="60" max="180" step="1" value="130" />
+
+      <label>α (A weight): <span id="alphaText" class="alpha">0.50</span></label>
+      <input id="alpha" type="range" min="0" max="1" step="0.01" value="0.5" />
     </div>
 
+    <!-- Drums -->
     <div class="card">
-      <label>Kick level: <span id="kickV">0.8</span></label>
-      <input id="kick" type="range" min="0" max="1" step="0.01" value="0.8"/>
-      <label>Snare level: <span id="snareV">0.6</span></label>
-      <input id="snare" type="range" min="0" max="1" step="0.01" value="0.6"/>
-      <label>Hi-hat density: <span id="hatV">0.5</span></label>
-      <input id="hat" type="range" min="0" max="1" step="0.01" value="0.5"/>
+      <h3 style="margin:0 0 10px">Drums</h3>
+      <label>Kick level: <span id="kickText">1.0</span></label>
+      <input id="kick" type="range" min="0" max="1" step="0.01" value="1" />
+
+      <label>Snare level: <span id="snareText">1.0</span></label>
+      <input id="snare" type="range" min="0" max="1" step="0.01" value="1" />
+
+      <label>Hi-hat density: <span id="hatText">0.65</span></label>
+      <input id="hat" type="range" min="0" max="1" step="0.01" value="0.65" />
     </div>
 
-    <div class="card">
-      <label>Lead brightness: <span id="leadV">0.4</span></label>
-      <input id="lead" type="range" min="0" max="1" step="0.01" value="0.4"/>
-      <label>Bass depth: <span id="bassV">0.5</span></label>
-      <input id="bass" type="range" min="0" max="1" step="0.01" value="0.5"/>
+    <!-- Synths -->
+    <div class="card grid">
+      <div>
+        <h3 style="margin:0 0 10px">Lead</h3>
+        <label>Lead brightness: <span id="leadText">0.55</span></label>
+        <input id="lead" type="range" min="0" max="1" step="0.01" value="0.55" />
+      </div>
+      <div>
+        <h3 style="margin:0 0 10px">Bass</h3>
+        <label>Bass depth: <span id="bassText">0.60</span></label>
+        <input id="bass" type="range" min="0" max="1" step="0.01" value="0.60" />
+      </div>
     </div>
+
+    <div class="footer">Hybrid mix via z-mix α·z<sub>A</sub> + (1-α)·z<sub>B</sub> → mapped to synth/drum params.</div>
   </div>
 
+  <!-- Tone.js CDN -->
+  <script src="https://unpkg.com/tone@14.8.49/build/Tone.js"></script>
   <script>
-    // 读取 URL 参数作为初始状态（例如 ?a=NOR&b=RUS&alpha=0.62）
-    const p = new URLSearchParams(location.search);
-    const a = p.get('a')||'A', b = p.get('b')||'B';
-    const alphaInit = Math.max(0, Math.min(1, parseFloat(p.get('alpha')||'0.5')));
-    document.getElementById('alpha').value = alphaInit;
-    document.getElementById('aV').innerText = alphaInit.toFixed(2);
-    document.getElementById('pill').innerText = `A=${a}  B=${b}`;
+  (function () {
+    const $ = (id) => document.getElementById(id);
+    const btnStart = $("btnStart"), btnStop = $("btnStop"), statusEl = $("status");
+    const bpm = $("bpm"), bpmText = $("bpmText");
+    const alpha = $("alpha"), alphaText = $("alphaText");
+    const kick = $("kick"), kickText = $("kickText");
+    const snare = $("snare"), snareText = $("snareText");
+    const hat = $("hat"), hatText = $("hatText");
+    const lead = $("lead"), leadText = $("leadText");
+    const bass = $("bass"), bassText = $("bassText");
 
-    const $ = id=>document.getElementById(id);
-    const syncVal = (id, v)=>($(id+'V').innerText = (typeof v==='number'?v:parseFloat($(id).value)).toFixed( (id==='bpm'||id==='kick'||id==='snare')?0:2 ));
+    let started = false;
+    let kickSynth, snareSynth, hatSynth, leadSynth, bassSynth;
+    let kickLoop, snareLoop, hatLoop, leadLoop, bassLoop;
 
-    // 声部
-    const master = new Tone.Volume(-6).toDestination();
-    const kick  = new Tone.MembraneSynth({pitchDecay:0.02,octaves:4,oscillator:{type:'sine'}}).connect(master);
-    const snare = new Tone.NoiseSynth({noise:{type:'white'},envelope:{attack:0.001,decay:0.2,sustain:0}}).connect(master);
-    const hat   = new Tone.MetalSynth({frequency:250,octaves:2,modulationIndex:20, resonance:4000, envelope:{attack:0.001,decay:0.1,release:0.01}}).connect(master);
-    const bass  = new Tone.MonoSynth({oscillator:{type:'square'},filter:{Q:2, type:"lowpass", rolloff:-24}, envelope:{attack:0.01,decay:0.2,sustain:0.6,release:0.5}}).connect(master);
-    const lead  = new Tone.Synth({oscillator:{type:'sawtooth'}, envelope:{attack:0.02,decay:0.15,sustain:0.2,release:0.3}}).connect(master);
-
-    // 简单模式：根据 α 做一些“性格”插值
-    function mapAlpha(){
-      const a = parseFloat($('alpha').value);
-      const bpm = 100 + a*60; // 100~160
-      Tone.Transport.bpm.rampTo(bpm, 0.2); syncVal('bpm', bpm);
-      $('bpm').value = bpm;
-
-      // 让 α 带动其它推子（你也可以手动调）
-      $('kick').value  = (0.5 + a*0.5).toFixed(2);
-      $('snare').value = (0.4 + (1-a)*0.4).toFixed(2);
-      $('hat').value   = (0.3 + a*0.7).toFixed(2);
-      $('lead').value  = (0.2 + a*0.7).toFixed(2);
-      $('bass').value  = (0.4 + (1-a)*0.4).toFixed(2);
-      ['kick','snare','hat','lead','bass','alpha'].forEach(id=>syncVal(id));
+    function updateLabels() {
+      bpmText.textContent = bpm.value;
+      alphaText.textContent = parseFloat(alpha.value).toFixed(2);
+      kickText.textContent = parseFloat(kick.value).toFixed(2);
+      snareText.textContent = parseFloat(snare.value).toFixed(2);
+      hatText.textContent = parseFloat(hat.value).toFixed(2);
+      leadText.textContent = parseFloat(lead.value).toFixed(2);
+      bassText.textContent = parseFloat(bass.value).toFixed(2);
     }
-    mapAlpha();
+    updateLabels();
 
-    // Sequencers（16 步，最简单的例子）
-    const steps = 16;
-    const patKick  = [1,0,0,0, 1,0,0,0, 1,0,0,0, 1,0,0,0];
-    const patSnare = [0,0,1,0, 0,0,1,0, 0,0,1,0, 0,0,1,0];
-    const patHat   = Array.from({length:steps}, (_,i)=> (i%2?1:0));
+    function mapAlpha(val, aFrom=0, aTo=1, bFrom=0, bTo=1) {
+      const t = (val - aFrom) / (aTo - aFrom);
+      return bFrom + t * (bTo - bFrom);
+    }
 
-    const seq = new Tone.Sequence((time, step)=>{
-      const i = step % steps;
-
-      if (patKick[i] && Math.random() < parseFloat($('kick').value)) {
-        kick.triggerAttackRelease("C1","8n", time);
-      }
-      if (patSnare[i] && Math.random() < parseFloat($('snare').value)) {
-        snare.triggerAttackRelease("16n", time);
-      }
-      if (patHat[i] && Math.random() < parseFloat($('hat').value)) {
-        hat.triggerAttackRelease("32n", time);
-      }
-      if (i%4===0){ // bass on beats
-        const depth = parseFloat($('bass').value);
-        const note = ["C2","A1","G1","F1"][ (i/4)%4 ];
-        bass.filter.frequency.value = 200 + 600*depth;
-        bass.triggerAttackRelease(note, "8n", time);
-      }
-      if (i%8===4){ // occasional lead
-        const br = parseFloat($('lead').value);
-        const note = ["E4","G4","A4","D4"][ (i/4)%4 ];
-        lead.oscillator.type = br>0.6 ? "sawtooth" : "triangle";
-        lead.triggerAttackRelease(note, "8n", time);
-      }
-    }, Array.from({length:steps}, (_,i)=>i), "16n");
-
-    // 交互
-    $('start').onclick = async ()=>{
+    async function startAudio() {
+      if (started) return;
       await Tone.start();
-      seq.start(0);
+      statusEl.textContent = "Audio started ✓";
+
+      // Global transport
+      Tone.Transport.bpm.value = parseInt(bpm.value, 10);
       Tone.Transport.start();
-      ['start'].forEach(id=>$(id).disabled=true);
-    };
-    $('stop').onclick = ()=>{
-      Tone.Transport.stop(); seq.stop();
-      $('start').disabled=false;
-    };
 
-    // 控件显示绑定
-    ['bpm','alpha','kick','snare','hat','lead','bass'].forEach(id=>{
-      $(id).addEventListener('input', ()=>{
-        syncVal(id);
-        if(id==='bpm') Tone.Transport.bpm.rampTo(parseFloat($(id).value), 0.1);
-        if(id==='alpha') mapAlpha();
-      });
-      syncVal(id);
-    });
+      // Synths
+      kickSynth = new Tone.MembraneSynth({ pitchDecay: 0.02, octaves: 9, oscillator: { type: "sine" }, envelope: { attack: 0.001, decay: 0.4, sustain: 0.1, release: 0.2 }}).toDestination();
+      snareSynth = new Tone.NoiseSynth({ noise: { type: "white" }, envelope: { attack: 0.001, decay: 0.2, sustain: 0 } }).toDestination();
+      hatSynth = new Tone.MetalSynth({ frequency: 200, envelope: { attack: 0.001, decay: 0.1, release: 0.01 }, harmonicity: 5.1, modulationIndex: 32 }).toDestination();
+      leadSynth = new Tone.Synth({ oscillator: { type: "sawtooth" }, envelope: { attack: 0.01, decay: 0.2, sustain: 0.3, release: 0.2 } }).toDestination();
+      bassSynth = new Tone.MonoSynth({ oscillator: { type: "square" }, filter: { Q: 1, type: "lowpass", rolloff: -24 }, envelope: { attack: 0.01, decay: 0.2, sustain: 0.3, release: 0.3 }, filterEnvelope: { attack: 0.02, decay: 0.2, sustain: 0.2, release: 0.2, baseFrequency: 100, octaves: 2.5 } }).toDestination();
 
-  </script>
+      // confirm beep
+      leadSynth.triggerAttackRelease("A4", "8n");
 
-  <!-- 确保 Tone.js 加载 -->
-<script src="https://unpkg.com/tone@14.8.49/build/Tone.js"></script>
+      // Loops
+      kickLoop = new Tone.Loop((time) => { kickSynth.volume.value = Tone.gainToDb(parseFloat(kick.value)); kickSynth.triggerAttackRelease("C2", "8n", time); }, "1n").start(0);
+      snareLoop = new Tone.Loop((time) => { snareSynth.volume.value = Tone.gainToDb(parseFloat(snare.value)); snareSynth.triggerAttackRelease("8n", time); }, "2n").start("2n");
+      hatLoop = new Tone.Loop((time) => { const density = parseFloat(hat.value); if (Math.random() < density) { hatSynth.triggerAttackRelease("32n", time); } }, "8n").start(0);
 
-<script>
-(() => {
-  // --- UI 元素取指针 ---
-  const $ = (q) => document.querySelector(q);
-  const btnStart = $('#btnStart');         // 你的 Start audio 按钮 id
-  const btnStop  = $('#btnStop');          // 你的 Stop 按钮 id
-  const bpmSlider   = $('#bpm');           // BPM 滑条 id
-  const alphaSlider = $('#alpha');         // α 滑条 id
-  const kickSlider  = $('#kick');          // 其他推子（示意）
-  const snareSlider = $('#snare');
-  const hatSlider   = $('#hat');
-  const leadSlider  = $('#lead');
-  const bassSlider  = $('#bass');
-  const statusSpan  = $('#audioStatus');   // 显示 audio 状态的 span（可选）
+      // a 影响明亮度/深度
+      leadLoop = new Tone.Loop((time) => {
+        const a = parseFloat(alpha.value);
+        const notesA = ["C4","E4","G4","B4"];
+        const notesB = ["D4","F#4","A4","C5"];
+        const n = Math.floor(Tone.Transport.ticks / Tone.Ticks("4n")) % 4;
+        const note = (a>0.5? notesA[n]: notesB[n]);
+        const brightness = mapAlpha(a, 0, 1, -18, -4) * parseFloat(lead.value);
+        leadSynth.volume.value = brightness;
+        leadSynth.triggerAttackRelease(note, "16n", time);
+      }, "4n").start(0);
 
-  // --- 运行时对象（等 start 之后创建）---
-  let kick, snare, hat, lead, bass;
-  let kickLoop, snareLoop, hatLoop, leadLoop, bassLoop;
-  let masterLim;
+      bassLoop = new Tone.Loop((time) => {
+        const a = parseFloat(alpha.value);
+        const bassA = ["C2","C2","G1","C2"];
+        const bassB = ["D2","D2","A1","D2"];
+        const n = Math.floor(Tone.Transport.ticks / Tone.Ticks("1n")) % 4;
+        const note = (a>0.5? bassA[n]: bassB[n]);
+        const depth = mapAlpha(a, 0, 1, -6, 0) * parseFloat(bass.value);
+        bassSynth.volume.value = depth;
+        bassSynth.triggerAttackRelease(note, "8n", time);
+      }, "1n").start(0);
 
-  // --- 工具: 更新状态显示 ---
-  function showStatus(prefix='') {
-    const st = Tone.context.state; // running | suspended
-    if (statusSpan) statusSpan.textContent = `${prefix}${st}`;
-    console.log(`[Audio] ${prefix}${st}`);
-  }
-
-  // --- 小测试：发一声哔，确认声能出来 ---
-  async function testBeep() {
-    const synth = new Tone.Synth().toDestination();
-    await synth.triggerAttackRelease("A4", "8n", Tone.now() + 0.05);
-  }
-
-  // --- 把推子值应用到音量/参数 ---
-  function applyMixer() {
-    if (!kick) return;
-    kick.volume.value  = Tone.gainToDb(parseFloat(kickSlider?.value ?? 1.0));
-    snare.volume.value = Tone.gainToDb(parseFloat(snareSlider?.value ?? 1.0));
-    hat.volume.value   = Tone.gainToDb(parseFloat(hatSlider?.value ?? 0.7));
-    lead.volume.value  = Tone.gainToDb(parseFloat(leadSlider?.value ?? 0.6));
-    bass.volume.value  = Tone.gainToDb(parseFloat(bassSlider?.value ?? 0.6));
-  }
-
-  // --- 根据 α、BPM 等更新模式（这只是示意，你可以替换为真实 mapping）---
-  function applyMusicParams() {
-    const α = parseFloat(alphaSlider?.value ?? 0.5); // 0..1
-    // 用 α 去混不同 driver 的节奏密度等（示例：kick 每拍、hat 三连/四连切换）
-    const hatDiv = α < 0.5 ? "16n" : "8t";
-    if (hatLoop) hatLoop.interval = hatDiv;
-    Tone.Transport.bpm.rampTo(parseFloat(bpmSlider?.value ?? 120), 0.05);
-  }
-
-  // --- 创建所有音源/FX/Loop（必须在 Tone.start() 之后调用）---
-  function createGraph() {
-    // Master 限幅，防爆
-    masterLim = new Tone.Limiter(-1).toDestination();
-
-    // 声源
-    kick  = new Tone.MembraneSynth({pitchDecay: 0.02, octaves: 3, envelope:{attack:0.001, decay:0.4, sustain:0.0, release:0.2}}).connect(masterLim);
-    snare = new Tone.NoiseSynth({noise:{type:"white"}, envelope:{attack:0.001, decay:0.2, sustain:0}}).connect(masterLim);
-    hat   = new Tone.MetalSynth({frequency:300, envelope:{attack:0.001, decay:0.05, release:0.01}}).connect(masterLim);
-    lead  = new Tone.Synth({oscillator:{type:"sawtooth"}}).connect(masterLim);
-    bass  = new Tone.MonoSynth({oscillator:{type:"square"}, filter:{Q:3, type:"lowpass", rolloff:-24}}).connect(masterLim);
-
-    applyMixer();
-
-    // 循环（示例节奏）
-    if (kickLoop) kickLoop.dispose();
-    kickLoop = new Tone.Loop((time)=>{ kick.triggerAttackRelease("C2", "8n", time); }, "4n").start(0);
-
-    if (snareLoop) snareLoop.dispose();
-    snareLoop = new Tone.Loop((time)=>{
-      // 2、4 拍
-      const pos = Tone.Transport.position.split(":");
-      const sixteenths = (+pos[1])*4 + (+pos[2]);
-      if (sixteenths % 8 === 4) snare.triggerAttackRelease("8n", time);
-    }, "16n").start(0);
-
-    if (hatLoop) hatLoop.dispose();
-    hatLoop = new Tone.Loop((time)=>{ hat.triggerAttackRelease("16n", time); }, "16n").start(0);
-
-    if (leadLoop) leadLoop.dispose();
-    leadLoop = new Tone.Pattern((time, note)=>{ lead.triggerAttackRelease(note,"16n",time); },
-      ["C4","E4","G4","B4"], "upDown").start(0);
-
-    if (bassLoop) bassLoop.dispose();
-    bassLoop = new Tone.Loop((time)=>{ bass.triggerAttackRelease("C2","8n",time); }, "2n").start(0);
-
-    applyMusicParams();
-  }
-
-  // --- 事件绑定 ---
-  btnStart?.addEventListener('click', async () => {
-    try {
-      // 1) 解锁音频
-      await Tone.start();
-      showStatus("after start: ");
-
-      // 2) **start 之后**再创建图
-      if (!kick) createGraph();
-
-      // 3) 一个“哔”确认能出声
-      await testBeep();
-
-      // 4) 开始 Transport
-      if (Tone.Transport.state !== "started") {
-        Tone.Transport.start("+0.05");
-      }
-    } catch (e) {
-      console.error("Start error:", e);
-      alert("Audio start failed. See console for details.");
+      started = true;
     }
-  });
 
-  btnStop?.addEventListener('click', async () => {
-    try {
+    function stopAudio() {
+      if (!started) return;
+      kickLoop?.stop(); snareLoop?.stop(); hatLoop?.stop(); leadLoop?.stop(); bassLoop?.stop();
       Tone.Transport.stop();
-      showStatus("stopped: ");
-    } catch (e) {
-      console.error("Stop error:", e);
+      statusEl.textContent = "Stopped";
+      started = false;
     }
-  });
 
-  // 推子绑定
-  bpmSlider?.addEventListener('input', applyMusicParams);
-  alphaSlider?.addEventListener('input', applyMusicParams);
-  [kickSlider,snareSlider,hatSlider,leadSlider,bassSlider].forEach(sl=>{
-    sl?.addEventListener('input', applyMixer);
-  });
-
-  // 初始状态提示
-  showStatus("init: ");
-})();
-</script>
-
+    // UI events
+    btnStart.addEventListener("click", startAudio);
+    btnStop.addEventListener("click", stopAudio);
+    bpm.addEventListener("input", () => { Tone.Transport.bpm.value = parseInt(bpm.value, 10); updateLabels(); });
+    alpha.addEventListener("input", updateLabels);
+    kick.addEventListener("input", updateLabels);
+    snare.addEventListener("input", updateLabels);
+    hat.addEventListener("input", updateLabels);
+    lead.addEventListener("input", updateLabels);
+    bass.addEventListener("input", updateLabels);
+  })();
+  </script>
 </body>
 </html>
