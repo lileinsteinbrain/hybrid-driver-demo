@@ -4,14 +4,13 @@
   <meta charset="utf-8" />
   <title>Hybrid Live Stage</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <!-- 迷你样式，页面自带，无需外链 -->
   <style>
-    :root{--bg:#0f1217;--panel:#1a1f27;--fg:#e9edf1;--sub:#a9b2be;--acc:#4c8bf5}
-    *{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.4 system-ui, -apple-system, Segoe UI, Roboto}
+    :root{--bg:#0f1217;--panel:#1a1f27;--fg:#e9edf1;--sub:#a9b2be;--acc:#4c8bf5;--warn:#ff6b6b}
+    *{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.4 system-ui,-apple-system,Segoe UI,Roboto}
     .wrap{max-width:900px;margin:28px auto;padding:0 16px}
     h1{display:flex;align-items:center;gap:10px;font-size:28px;margin:0 0 12px}
     .badge{background:#22304a;color:#92b0ff;padding:2px 8px;border-radius:999px;font-weight:600;margin-left:10px}
-    .note{color:var(--sub);margin-bottom:16px}
+    .note{color:var(--sub);margin-bottom:12px}
     .card{background:var(--panel);border-radius:12px;padding:16px;margin:14px 0;box-shadow:0 4px 18px rgba(0,0,0,.25)}
     .row{display:flex;gap:12px;flex-wrap:wrap}
     .btn{background:var(--acc);color:white;border:0;border-radius:10px;padding:10px 16px;font-weight:700;cursor:pointer}
@@ -21,19 +20,19 @@
     .grid{display:grid;grid-template-columns:1fr;gap:18px}
     @media (min-width:760px){.grid{grid-template-columns:1fr 1fr}}
     .footer{color:#7f8a99;font-size:14px;margin-top:18px}
-    .head{display:flex;align-items:center;gap:10px}
-    .alpha{font-weight:700;color:#9fd4ff}
+    .warn{color:var(--warn);font-weight:700}
+    .state{font-size:12px;color:#9bb2ff;margin-left:10px}
   </style>
 </head>
 <body>
   <div class="wrap">
-    <div class="head">
+    <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
       <h1>🎧 Hybrid Live Stage</h1>
       <span id="who" class="badge">A=NOR B=RUS</span>
+      <span id="ctxState" class="state">Audio: unknown</span>
     </div>
     <div class="note">Browser audio needs a click. This page is standalone (no backend).</div>
 
-    <!-- Transport -->
     <div class="card">
       <div class="row" style="gap:10px">
         <button id="btnStart" class="btn">Start audio</button>
@@ -42,25 +41,20 @@
       </div>
       <label>BPM: <span id="bpmText">130</span></label>
       <input id="bpm" type="range" min="60" max="180" step="1" value="130" />
-
-      <label>α (A weight): <span id="alphaText" class="alpha">0.50</span></label>
+      <label>α (A weight): <span id="alphaText" style="font-weight:700;color:#9fd4ff">0.50</span></label>
       <input id="alpha" type="range" min="0" max="1" step="0.01" value="0.5" />
     </div>
 
-    <!-- Drums -->
     <div class="card">
       <h3 style="margin:0 0 10px">Drums</h3>
       <label>Kick level: <span id="kickText">1.0</span></label>
       <input id="kick" type="range" min="0" max="1" step="0.01" value="1" />
-
       <label>Snare level: <span id="snareText">1.0</span></label>
       <input id="snare" type="range" min="0" max="1" step="0.01" value="1" />
-
       <label>Hi-hat density: <span id="hatText">0.65</span></label>
       <input id="hat" type="range" min="0" max="1" step="0.01" value="0.65" />
     </div>
 
-    <!-- Synths -->
     <div class="card grid">
       <div>
         <h3 style="margin:0 0 10px">Lead</h3>
@@ -74,111 +68,136 @@
       </div>
     </div>
 
+    <div id="cdnWarn" class="note warn" style="display:none">⚠️ Tone.js failed to load. Check your network / ad-blocker.</div>
     <div class="footer">Hybrid mix via z-mix α·z<sub>A</sub> + (1-α)·z<sub>B</sub> → mapped to synth/drum params.</div>
   </div>
 
-  <!-- Tone.js CDN -->
-  <script src="https://unpkg.com/tone@14.8.49/build/Tone.js"></script>
+  <!-- Tone.js：主 CDN（unpkg） + 备用（jsdelivr），任一成功即可 -->
   <script>
-  (function () {
-    const $ = (id) => document.getElementById(id);
-    const btnStart = $("btnStart"), btnStop = $("btnStop"), statusEl = $("status");
-    const bpm = $("bpm"), bpmText = $("bpmText");
-    const alpha = $("alpha"), alphaText = $("alphaText");
-    const kick = $("kick"), kickText = $("kickText");
-    const snare = $("snare"), snareText = $("snareText");
-    const hat = $("hat"), hatText = $("hatText");
-    const lead = $("lead"), leadText = $("leadText");
-    const bass = $("bass"), bassText = $("bassText");
+    window.__toneLoaded = false;
+  </script>
+  <script src="https://unpkg.com/tone@14.8.49/build/Tone.js"
+          onload="window.__toneLoaded=true"></script>
+  <script>
+    setTimeout(function(){
+      if(!window.__toneLoaded){
+        // 备用载入
+        var s=document.createElement('script');
+        s.src="https://cdn.jsdelivr.net/npm/tone@14.8.49/build/Tone.js";
+        s.onload=function(){ window.__toneLoaded=true; };
+        document.head.appendChild(s);
+      }
+    }, 500);
+  </script>
 
-    let started = false;
+  <script>
+  (function(){
+    const $ = (id) => document.getElementById(id);
+    const btnStart=$("btnStart"), btnStop=$("btnStop"), statusEl=$("status"), ctxState=$("ctxState");
+    const bpm=$("bpm"), bpmText=$("bpmText");
+    const alpha=$("alpha"), alphaText=$("alphaText");
+    const kick=$("kick"), kickText=$("kickText");
+    const snare=$("snare"), snareText=$("snareText");
+    const hat=$("hat"), hatText=$("hatText");
+    const lead=$("lead"), leadText=$("leadText");
+    const bass=$("bass"), bassText=$("bassText");
+    const cdnWarn = $("cdnWarn");
+
+    let started=false;
     let kickSynth, snareSynth, hatSynth, leadSynth, bassSynth;
     let kickLoop, snareLoop, hatLoop, leadLoop, bassLoop;
 
-    function updateLabels() {
-      bpmText.textContent = bpm.value;
-      alphaText.textContent = parseFloat(alpha.value).toFixed(2);
-      kickText.textContent = parseFloat(kick.value).toFixed(2);
-      snareText.textContent = parseFloat(snare.value).toFixed(2);
-      hatText.textContent = parseFloat(hat.value).toFixed(2);
-      leadText.textContent = parseFloat(lead.value).toFixed(2);
-      bassText.textContent = parseFloat(bass.value).toFixed(2);
+    function updLabels(){
+      bpmText.textContent=bpm.value;
+      alphaText.textContent=parseFloat(alpha.value).toFixed(2);
+      kickText.textContent=parseFloat(kick.value).toFixed(2);
+      snareText.textContent=parseFloat(snare.value).toFixed(2);
+      hatText.textContent=parseFloat(hat.value).toFixed(2);
+      leadText.textContent=parseFloat(lead.value).toFixed(2);
+      bassText.textContent=parseFloat(bass.value).toFixed(2);
     }
-    updateLabels();
+    updLabels();
 
-    function mapAlpha(val, aFrom=0, aTo=1, bFrom=0, bTo=1) {
-      const t = (val - aFrom) / (aTo - aFrom);
-      return bFrom + t * (bTo - bFrom);
-    }
+    function mapAlpha(v, a0=0,a1=1, b0=0,b1=1){ const t=(v-a0)/(a1-a0); return b0+t*(b1-b0); }
 
-    async function startAudio() {
-      if (started) return;
-      await Tone.start();
-      statusEl.textContent = "Audio started ✓";
-
-      // Global transport
-      Tone.Transport.bpm.value = parseInt(bpm.value, 10);
-      Tone.Transport.start();
-
-      // Synths
-      kickSynth = new Tone.MembraneSynth({ pitchDecay: 0.02, octaves: 9, oscillator: { type: "sine" }, envelope: { attack: 0.001, decay: 0.4, sustain: 0.1, release: 0.2 }}).toDestination();
-      snareSynth = new Tone.NoiseSynth({ noise: { type: "white" }, envelope: { attack: 0.001, decay: 0.2, sustain: 0 } }).toDestination();
-      hatSynth = new Tone.MetalSynth({ frequency: 200, envelope: { attack: 0.001, decay: 0.1, release: 0.01 }, harmonicity: 5.1, modulationIndex: 32 }).toDestination();
-      leadSynth = new Tone.Synth({ oscillator: { type: "sawtooth" }, envelope: { attack: 0.01, decay: 0.2, sustain: 0.3, release: 0.2 } }).toDestination();
-      bassSynth = new Tone.MonoSynth({ oscillator: { type: "square" }, filter: { Q: 1, type: "lowpass", rolloff: -24 }, envelope: { attack: 0.01, decay: 0.2, sustain: 0.3, release: 0.3 }, filterEnvelope: { attack: 0.02, decay: 0.2, sustain: 0.2, release: 0.2, baseFrequency: 100, octaves: 2.5 } }).toDestination();
-
-      // confirm beep
-      leadSynth.triggerAttackRelease("A4", "8n");
-
-      // Loops
-      kickLoop = new Tone.Loop((time) => { kickSynth.volume.value = Tone.gainToDb(parseFloat(kick.value)); kickSynth.triggerAttackRelease("C2", "8n", time); }, "1n").start(0);
-      snareLoop = new Tone.Loop((time) => { snareSynth.volume.value = Tone.gainToDb(parseFloat(snare.value)); snareSynth.triggerAttackRelease("8n", time); }, "2n").start("2n");
-      hatLoop = new Tone.Loop((time) => { const density = parseFloat(hat.value); if (Math.random() < density) { hatSynth.triggerAttackRelease("32n", time); } }, "8n").start(0);
-
-      // a 影响明亮度/深度
-      leadLoop = new Tone.Loop((time) => {
-        const a = parseFloat(alpha.value);
-        const notesA = ["C4","E4","G4","B4"];
-        const notesB = ["D4","F#4","A4","C5"];
-        const n = Math.floor(Tone.Transport.ticks / Tone.Ticks("4n")) % 4;
-        const note = (a>0.5? notesA[n]: notesB[n]);
-        const brightness = mapAlpha(a, 0, 1, -18, -4) * parseFloat(lead.value);
-        leadSynth.volume.value = brightness;
-        leadSynth.triggerAttackRelease(note, "16n", time);
-      }, "4n").start(0);
-
-      bassLoop = new Tone.Loop((time) => {
-        const a = parseFloat(alpha.value);
-        const bassA = ["C2","C2","G1","C2"];
-        const bassB = ["D2","D2","A1","D2"];
-        const n = Math.floor(Tone.Transport.ticks / Tone.Ticks("1n")) % 4;
-        const note = (a>0.5? bassA[n]: bassB[n]);
-        const depth = mapAlpha(a, 0, 1, -6, 0) * parseFloat(bass.value);
-        bassSynth.volume.value = depth;
-        bassSynth.triggerAttackRelease(note, "8n", time);
-      }, "1n").start(0);
-
-      started = true;
+    function setCtxState(){
+      try{
+        if(window.Tone && Tone.getContext){
+          ctxState.textContent="Audio: " + Tone.getContext().state; // running/suspended
+        }
+      }catch(e){}
     }
 
-    function stopAudio() {
-      if (!started) return;
-      kickLoop?.stop(); snareLoop?.stop(); hatLoop?.stop(); leadLoop?.stop(); bassLoop?.stop();
-      Tone.Transport.stop();
-      statusEl.textContent = "Stopped";
-      started = false;
+    async function startAudio(){
+      try{
+        if(!window.__toneLoaded || !window.Tone){
+          cdnWarn.style.display='block';
+          statusEl.textContent="Tone.js not loaded.";
+          return;
+        }
+        // 必需的用户手势启动
+        await Tone.start();
+        setCtxState();
+        Tone.Transport.bpm.value=parseInt(bpm.value,10);
+        Tone.Transport.start();
+
+        // 合成器
+        kickSynth=new Tone.MembraneSynth({pitchDecay:0.02,octaves:9,oscillator:{type:"sine"},envelope:{attack:0.001,decay:0.4,sustain:0.1,release:0.2}}).toDestination();
+        snareSynth=new Tone.NoiseSynth({noise:{type:"white"},envelope:{attack:0.001,decay:0.2,sustain:0}}).toDestination();
+        hatSynth=new Tone.MetalSynth({frequency:200,envelope:{attack:0.001,decay:0.1,release:0.01},harmonicity:5.1,modulationIndex:32}).toDestination();
+        leadSynth=new Tone.Synth({oscillator:{type:"sawtooth"},envelope:{attack:0.01,decay:0.2,sustain:0.3,release:0.2}}).toDestination();
+        bassSynth=new Tone.MonoSynth({oscillator:{type:"square"},filter:{Q:1,type:"lowpass",rolloff:-24},envelope:{attack:0.01,decay:0.2,sustain:0.3,release:0.3},filterEnvelope:{attack:0.02,decay:0.2,sustain:0.2,release:0.2,baseFrequency:100,octaves:2.5}}).toDestination();
+
+        // 成功哔一声作为确认
+        leadSynth.triggerAttackRelease("A4","8n");
+
+        // 循环
+        kickLoop=new Tone.Loop((time)=>{ kickSynth.volume.value=Tone.gainToDb(parseFloat(kick.value)); kickSynth.triggerAttackRelease("C2","8n",time); },"1n").start(0);
+        snareLoop=new Tone.Loop((time)=>{ snareSynth.volume.value=Tone.gainToDb(parseFloat(snare.value)); snareSynth.triggerAttackRelease("8n",time); },"2n").start("2n");
+        hatLoop=new Tone.Loop((time)=>{ const d=parseFloat(hat.value); if(Math.random()<d){ hatSynth.triggerAttackRelease("32n",time); } },"8n").start(0);
+
+        leadLoop=new Tone.Loop((time)=>{ const a=parseFloat(alpha.value); const A=["C4","E4","G4","B4"], B=["D4","F#4","A4","C5"]; const n=Math.floor(Tone.Transport.ticks/Tone.Ticks("4n"))%4; const note=(a>0.5?A[n]:B[n]); const bright=mapAlpha(a,0,1,-18,-4)*parseFloat(lead.value); leadSynth.volume.value=bright; leadSynth.triggerAttackRelease(note,"16n",time); },"4n").start(0);
+
+        bassLoop=new Tone.Loop((time)=>{ const a=parseFloat(alpha.value); const A=["C2","C2","G1","C2"], B=["D2","D2","A1","D2"]; const n=Math.floor(Tone.Transport.ticks/Tone.Ticks("1n"))%4; const note=(a>0.5?A[n]:B[n]); const depth=mapAlpha(a,0,1,-6,0)*parseFloat(bass.value); bassSynth.volume.value=depth; bassSynth.triggerAttackRelease(note,"8n",time); },"1n").start(0);
+
+        statusEl.textContent="Audio started ✓";
+        started=true;
+      }catch(err){
+        statusEl.textContent="Error: " + err.message;
+        console.error(err);
+      }
     }
 
-    // UI events
+    function stopAudio(){
+      try{
+        if(!started) return;
+        kickLoop?.stop(); snareLoop?.stop(); hatLoop?.stop(); leadLoop?.stop(); bassLoop?.stop();
+        Tone.Transport.stop();
+        statusEl.textContent="Stopped";
+        started=false;
+        setCtxState();
+      }catch(e){ console.error(e); }
+    }
+
+    // 事件绑定
     btnStart.addEventListener("click", startAudio);
     btnStop.addEventListener("click", stopAudio);
-    bpm.addEventListener("input", () => { Tone.Transport.bpm.value = parseInt(bpm.value, 10); updateLabels(); });
-    alpha.addEventListener("input", updateLabels);
-    kick.addEventListener("input", updateLabels);
-    snare.addEventListener("input", updateLabels);
-    hat.addEventListener("input", updateLabels);
-    lead.addEventListener("input", updateLabels);
-    bass.addEventListener("input", updateLabels);
+    bpm.addEventListener("input", ()=>{ if(window.Tone){ Tone.Transport.bpm.value=parseInt(bpm.value,10); } updLabels(); });
+    alpha.addEventListener("input", updLabels);
+    kick.addEventListener("input", updLabels);
+    snare.addEventListener("input", updLabels);
+    hat.addEventListener("input", updLabels);
+    lead.addEventListener("input", updLabels);
+    bass.addEventListener("input", updLabels);
+
+    // 兜底：任何点击都尝试恢复 AudioContext（有些浏览器需要）
+    document.addEventListener("click", ()=>{
+      try{ if(window.Tone && Tone.getContext().state!=="running"){ Tone.getContext().resume(); setCtxState(); } }catch(e){}
+    });
+
+    // 如果 CDN 很慢，3 秒后仍未加载则提示
+    setTimeout(()=>{ if(!window.__toneLoaded){ cdnWarn.style.display='block'; } }, 3000);
+    setInterval(setCtxState, 500);
   })();
   </script>
 </body>
