@@ -141,6 +141,146 @@
       });
       syncVal(id);
     });
+
   </script>
+
+  <!-- 确保 Tone.js 加载 -->
+<script src="https://unpkg.com/tone@14.8.49/build/Tone.js"></script>
+
+<script>
+(() => {
+  // --- UI 元素取指针 ---
+  const $ = (q) => document.querySelector(q);
+  const btnStart = $('#btnStart');         // 你的 Start audio 按钮 id
+  const btnStop  = $('#btnStop');          // 你的 Stop 按钮 id
+  const bpmSlider   = $('#bpm');           // BPM 滑条 id
+  const alphaSlider = $('#alpha');         // α 滑条 id
+  const kickSlider  = $('#kick');          // 其他推子（示意）
+  const snareSlider = $('#snare');
+  const hatSlider   = $('#hat');
+  const leadSlider  = $('#lead');
+  const bassSlider  = $('#bass');
+  const statusSpan  = $('#audioStatus');   // 显示 audio 状态的 span（可选）
+
+  // --- 运行时对象（等 start 之后创建）---
+  let kick, snare, hat, lead, bass;
+  let kickLoop, snareLoop, hatLoop, leadLoop, bassLoop;
+  let masterLim;
+
+  // --- 工具: 更新状态显示 ---
+  function showStatus(prefix='') {
+    const st = Tone.context.state; // running | suspended
+    if (statusSpan) statusSpan.textContent = `${prefix}${st}`;
+    console.log(`[Audio] ${prefix}${st}`);
+  }
+
+  // --- 小测试：发一声哔，确认声能出来 ---
+  async function testBeep() {
+    const synth = new Tone.Synth().toDestination();
+    await synth.triggerAttackRelease("A4", "8n", Tone.now() + 0.05);
+  }
+
+  // --- 把推子值应用到音量/参数 ---
+  function applyMixer() {
+    if (!kick) return;
+    kick.volume.value  = Tone.gainToDb(parseFloat(kickSlider?.value ?? 1.0));
+    snare.volume.value = Tone.gainToDb(parseFloat(snareSlider?.value ?? 1.0));
+    hat.volume.value   = Tone.gainToDb(parseFloat(hatSlider?.value ?? 0.7));
+    lead.volume.value  = Tone.gainToDb(parseFloat(leadSlider?.value ?? 0.6));
+    bass.volume.value  = Tone.gainToDb(parseFloat(bassSlider?.value ?? 0.6));
+  }
+
+  // --- 根据 α、BPM 等更新模式（这只是示意，你可以替换为真实 mapping）---
+  function applyMusicParams() {
+    const α = parseFloat(alphaSlider?.value ?? 0.5); // 0..1
+    // 用 α 去混不同 driver 的节奏密度等（示例：kick 每拍、hat 三连/四连切换）
+    const hatDiv = α < 0.5 ? "16n" : "8t";
+    if (hatLoop) hatLoop.interval = hatDiv;
+    Tone.Transport.bpm.rampTo(parseFloat(bpmSlider?.value ?? 120), 0.05);
+  }
+
+  // --- 创建所有音源/FX/Loop（必须在 Tone.start() 之后调用）---
+  function createGraph() {
+    // Master 限幅，防爆
+    masterLim = new Tone.Limiter(-1).toDestination();
+
+    // 声源
+    kick  = new Tone.MembraneSynth({pitchDecay: 0.02, octaves: 3, envelope:{attack:0.001, decay:0.4, sustain:0.0, release:0.2}}).connect(masterLim);
+    snare = new Tone.NoiseSynth({noise:{type:"white"}, envelope:{attack:0.001, decay:0.2, sustain:0}}).connect(masterLim);
+    hat   = new Tone.MetalSynth({frequency:300, envelope:{attack:0.001, decay:0.05, release:0.01}}).connect(masterLim);
+    lead  = new Tone.Synth({oscillator:{type:"sawtooth"}}).connect(masterLim);
+    bass  = new Tone.MonoSynth({oscillator:{type:"square"}, filter:{Q:3, type:"lowpass", rolloff:-24}}).connect(masterLim);
+
+    applyMixer();
+
+    // 循环（示例节奏）
+    if (kickLoop) kickLoop.dispose();
+    kickLoop = new Tone.Loop((time)=>{ kick.triggerAttackRelease("C2", "8n", time); }, "4n").start(0);
+
+    if (snareLoop) snareLoop.dispose();
+    snareLoop = new Tone.Loop((time)=>{
+      // 2、4 拍
+      const pos = Tone.Transport.position.split(":");
+      const sixteenths = (+pos[1])*4 + (+pos[2]);
+      if (sixteenths % 8 === 4) snare.triggerAttackRelease("8n", time);
+    }, "16n").start(0);
+
+    if (hatLoop) hatLoop.dispose();
+    hatLoop = new Tone.Loop((time)=>{ hat.triggerAttackRelease("16n", time); }, "16n").start(0);
+
+    if (leadLoop) leadLoop.dispose();
+    leadLoop = new Tone.Pattern((time, note)=>{ lead.triggerAttackRelease(note,"16n",time); },
+      ["C4","E4","G4","B4"], "upDown").start(0);
+
+    if (bassLoop) bassLoop.dispose();
+    bassLoop = new Tone.Loop((time)=>{ bass.triggerAttackRelease("C2","8n",time); }, "2n").start(0);
+
+    applyMusicParams();
+  }
+
+  // --- 事件绑定 ---
+  btnStart?.addEventListener('click', async () => {
+    try {
+      // 1) 解锁音频
+      await Tone.start();
+      showStatus("after start: ");
+
+      // 2) **start 之后**再创建图
+      if (!kick) createGraph();
+
+      // 3) 一个“哔”确认能出声
+      await testBeep();
+
+      // 4) 开始 Transport
+      if (Tone.Transport.state !== "started") {
+        Tone.Transport.start("+0.05");
+      }
+    } catch (e) {
+      console.error("Start error:", e);
+      alert("Audio start failed. See console for details.");
+    }
+  });
+
+  btnStop?.addEventListener('click', async () => {
+    try {
+      Tone.Transport.stop();
+      showStatus("stopped: ");
+    } catch (e) {
+      console.error("Stop error:", e);
+    }
+  });
+
+  // 推子绑定
+  bpmSlider?.addEventListener('input', applyMusicParams);
+  alphaSlider?.addEventListener('input', applyMusicParams);
+  [kickSlider,snareSlider,hatSlider,leadSlider,bassSlider].forEach(sl=>{
+    sl?.addEventListener('input', applyMixer);
+  });
+
+  // 初始状态提示
+  showStatus("init: ");
+})();
+</script>
+
 </body>
 </html>
