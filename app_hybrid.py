@@ -3,11 +3,11 @@ import os, sys, time, json
 import numpy as np
 import pandas as pd
 import streamlit as st
-import requests  # (dedup) 你原来重复 import 了
+import requests  # 单次导入
 
 # ==== live push endpoints ====
 LIVE_URL = os.environ.get("LIVE_PUSH_URL", "http://localhost:8000/push")
-# >>> NEW: WebSocket bridge的HTTP广播端点（你本地跑 ws_bridge.py 就用默认值）
+# WebSocket bridge 的 HTTP 广播端点（本地跑 ws_bridge.py 默认 http://localhost:8765/broadcast）
 BRIDGE_HTTP = os.environ.get("BRIDGE_HTTP", "http://localhost:8765/broadcast")
 
 # ==== render backend safe ====
@@ -168,7 +168,7 @@ live_url = f"{LIVE_STAGE_BASE}?a={drv_A}&b={drv_B}&alpha={alpha:.2f}"
 st.sidebar.link_button("🎧 Open Live Stage (music)", live_url, type="primary")
 st.sidebar.caption("The music page runs in your browser (WebAudio/Tone.js). Use α to hear the hybrid mix.")
 
-# >>> NEW: WebSocket bridge 开关与地址（和 link 共存，二选一都行）
+# WebSocket bridge 选项
 with st.sidebar.expander("Live Stage link (WebSocket bridge)"):
     use_bridge = st.checkbox("Broadcast via WebSocket bridge", value=False)
     bridge_http = st.text_input("Bridge HTTP endpoint", BRIDGE_HTTP)
@@ -336,7 +336,7 @@ def step_similarities(ti: int, drvA: str, drvB: str, alpha: float):
     values = list(sim) + [sim_h]
     return labels, values, z_mix
 
-# >>> NEW: z → 音频参数映射（可继续调味）
+# z → 音频参数映射（bpm/lead/bass/kick/hat/snare）
 def z_to_audio_params(z_tensor):
     v = z_tensor.detach().cpu().numpy().reshape(-1)
     def block(a, b):
@@ -352,9 +352,8 @@ def z_to_audio_params(z_tensor):
     return {"bpm": bpm, "kick": clip(kick), "snare": clip(snare),
             "hat": clip(hat), "lead": clip(lead), "bass": clip(bass)}
 
-# >>> NEW: 通过 WebSocket bridge 广播（POST /broadcast）
+# 通过 WebSocket bridge 广播（POST /broadcast）
 def try_broadcast_wsbridge(drvA, drvB, alpha, params, step_idx, bar_labels, bar_values):
-    # 只有勾选 use_bridge 才发；避免卡 UI
     if not use_bridge:
         return
     payload = {
@@ -384,7 +383,7 @@ with bar_col:
     df_bar = pd.DataFrame({"driver": labels_bar, "similarity": values_bar})
     st.bar_chart(df_bar.set_index("driver"))
 
-# >>> 调用：把当前帧推到 你已有的 LIVE_URL（不改你原逻辑）
+# 把当前帧推到你已有的 LIVE_URL（老格式）
 def push_live_frame(t_idx, alpha, drv_A, drv_B, A_all_row, sim_labels, sim_values):
     sim = {k: float(v) for k,v in zip(sim_labels, sim_values)}
     feat = {
@@ -405,13 +404,13 @@ def push_live_frame(t_idx, alpha, drv_A, drv_B, A_all_row, sim_labels, sim_value
     except Exception:
         pass
 
-# —— 发到你现有的 LIVE_URL
+# —— 发到 LIVE_URL
 push_live_frame(
     st.session_state.t_idx, alpha, drv_A, drv_B,
     A_all[st.session_state.t_idx], labels_bar, values_bar
 )
 
-# >>> NEW —— 同时发到 WebSocket bridge（让 docs/ 前端实时联动）
+# —— 同时发到 WebSocket bridge（让 docs/ 前端实时联动）
 audio_params = z_to_audio_params(z_mix)
 try_broadcast_wsbridge(drv_A, drv_B, alpha, audio_params, st.session_state.t_idx, labels_bar, values_bar)
 
@@ -477,13 +476,13 @@ def explain_one_segment(s_lo, s_hi, S_t, A_t, classes, drv_to_id, model, device)
         sims.sort(key=lambda x: x[1], reverse=True)
         return sims
 
-# —— 维持你原来的均值/方差统计 —— 
+# 均值/方差统计
 def action_summary(A_all, s_lo, s_hi, labels=("d_heading", "d_brake", "d_throttle")):
     seg = A_all[s_lo:s_hi]
     mean = seg.mean(axis=0); std  = seg.std(axis=0)
     return {labels[i]: (float(mean[i]), float(std[i])) for i in range(min(len(labels), seg.shape[1]))}
 
-# —— 自然语言生成（新增）——
+# 自然语言摘要
 def explain_segments_text(df_explain: pd.DataFrame, lang: str = "中文"):
     lines = []
     for _, r in df_explain.iterrows():
@@ -530,7 +529,6 @@ else:
         st.caption("Top1 driver by segment")
         st.bar_chart(df_explain.set_index("segment")[["top1_sim"]])
 
-        # === 自然语言摘要（新增）===
         st.markdown("#### Narrative / 文本说明")
         summary_text = explain_segments_text(df_explain, lang=lang)
         st.info(summary_text or ("No segment summary produced." if lang=="English" else "本圈未生成段落摘要。"))
