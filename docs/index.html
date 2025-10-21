@@ -90,9 +90,10 @@
     }, 500);
   </script>
 <!-- === WebSocket Bridge 地址配置 === -->
-  <script>
-    window.WS_URL = "wss://hybrid-driver-demo-production.up.railway.app/ws";
-  </script>
+<script>
+  window.WS_URL   = "wss://hybrid-driver-demo-production.up.railway.app/ws";
+  window.PUSH_URL = "https://hybrid-driver-demo-production.up.railway.app/push"; // 仅在前端主动POST时用
+</script>
   
   <script>
   (function(){
