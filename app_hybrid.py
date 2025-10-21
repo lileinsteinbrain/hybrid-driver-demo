@@ -3,8 +3,12 @@ import os, sys, time, json
 import numpy as np
 import pandas as pd
 import streamlit as st
-import requests, os
+import requests  # (dedup) 你原来重复 import 了
+
+# ==== live push endpoints ====
 LIVE_URL = os.environ.get("LIVE_PUSH_URL", "http://localhost:8000/push")
+# >>> NEW: WebSocket bridge的HTTP广播端点（你本地跑 ws_bridge.py 就用默认值）
+BRIDGE_HTTP = os.environ.get("BRIDGE_HTTP", "http://localhost:8765/broadcast")
 
 # ==== render backend safe ====
 os.environ.setdefault("MPLBACKEND", "Agg")
@@ -50,10 +54,9 @@ def make_features_from_csv(df_raw: pd.DataFrame, n_pts: int = 220):
     v = df_raw["speed_kph"].to_numpy().astype(float) * 1000/3600.0
     thr = df_raw["throttle"].to_numpy().astype(float) / 100.0
     brk = df_raw["brake"].to_numpy().astype(float)
-    brk = np.where(brk > 1.0, brk/100.0, brk)  # 兼容 0/100
+    brk = np.where(brk > 1.0, brk/100.0, brk)
     brk = np.clip(brk, 0.0, 1.0)
 
-    # distance（若无则由速度积分近似）
     if "distance" in df_raw.columns:
         dist = df_raw["distance"].to_numpy().astype(float)
     else:
@@ -61,15 +64,12 @@ def make_features_from_csv(df_raw: pd.DataFrame, n_pts: int = 220):
         dt[0] = dt[1] if len(dt)>1 else 0.01
         dist = np.cumsum(v * dt)
 
-    # phase
     L = max(1e-6, (np.nanmax(dist) - np.nanmin(dist)))
     phase = (dist - np.nanmin(dist)) / L
     phase = np.clip(phase, 0, 1)
 
-    # a_long
     a_long = np.gradient(v, t)
 
-    # heading / a_lat（只有 x,y 时较准；否则置 0）
     if ("x" in df_raw.columns) and ("y" in df_raw.columns):
         x = df_raw["x"].to_numpy().astype(float)
         y = df_raw["y"].to_numpy().astype(float)
@@ -87,7 +87,6 @@ def make_features_from_csv(df_raw: pd.DataFrame, n_pts: int = 220):
     d_brk = np.gradient(brk, t)
     mu_proxy = np.sqrt(a_lat**2 + a_long**2)
 
-    # 重采样至固定网格
     def _resample(x_phase, y, grid):
         m = ~(np.isnan(x_phase) | np.isnan(y))
         if m.sum() < 8: return None
@@ -165,10 +164,15 @@ with st.sidebar.expander("Hybrid mix"):
 
 # --- Live Stage link (open the music page with current params) ---
 LIVE_STAGE_BASE = "https://lileinsteinbrain.github.io/hybrid-driver-demo/index.html"
-
 live_url = f"{LIVE_STAGE_BASE}?a={drv_A}&b={drv_B}&alpha={alpha:.2f}"
 st.sidebar.link_button("🎧 Open Live Stage (music)", live_url, type="primary")
 st.sidebar.caption("The music page runs in your browser (WebAudio/Tone.js). Use α to hear the hybrid mix.")
+
+# >>> NEW: WebSocket bridge 开关与地址（和 link 共存，二选一都行）
+with st.sidebar.expander("Live Stage link (WebSocket bridge)"):
+    use_bridge = st.checkbox("Broadcast via WebSocket bridge", value=False)
+    bridge_http = st.text_input("Bridge HTTP endpoint", BRIDGE_HTTP)
+    st.caption("Local: run `uvicorn ws_bridge:app --port 8765`")
 
 # ---------------- Data source + Language ----------------
 ENABLE_USER_UPLOAD = True
@@ -216,7 +220,7 @@ if (user_csv is None) or (source == "FastF1 (official)"):
 # Telemetry driver + which lap
 c1, c2 = st.columns([2, 1])
 if (user_csv is not None) and (source == "Upload CSV"):
-    telem_options = ["USER"] + classes  # 允许“USER”作为源，也可切到官方某车手
+    telem_options = ["USER"] + classes
 else:
     telem_options = classes
 
@@ -260,7 +264,7 @@ model = PolicyNet(sd=sd, ad=ad, n=len(classes), z_dim=best_z, hidden=96, use_emb
 if os.path.exists(MODEL_PATH):
     try:
         state = torch.load(MODEL_PATH, map_location="cpu")
-        model.load_state_dict(state, strict=False)  # allow slight key mismatch
+        model.load_state_dict(state, strict=False)
     except Exception as e:
         st.warning(f"Loading state_dict for PolicyNet: size mismatch (already handled); detail: {e}")
 else:
@@ -290,7 +294,7 @@ def get_z(driver_code: str):
 
 def _fwd_with_z_override_or_bypass(S_step: torch.Tensor, z: torch.Tensor):
     try:
-        return model(S_step, None, z_override=z)  # 若你的 PolicyNet.forward 支持
+        return model(S_step, None, z_override=z)  # 若 forward 支持
     except TypeError:
         pass
     except Exception:
@@ -302,7 +306,7 @@ def _fwd_with_z_override_or_bypass(S_step: torch.Tensor, z: torch.Tensor):
         lv = torch.clamp(lv, -4.0, 2.0)
         return m, lv
     else:
-        raise RuntimeError("Model does not expose z_override nor .net for bypass. Enable z_override in PolicyNet.forward.")
+        raise RuntimeError("Model does not expose z_override nor .net for bypass.")
 
 def step_nll_with_z(ti: int, z_override: torch.Tensor):
     with torch.no_grad():
@@ -330,7 +334,41 @@ def step_similarities(ti: int, drvA: str, drvB: str, alpha: float):
     sim_h = float(np.exp(-nll_h))
     labels = classes + [f"Hybrid[{drvA}/{drvB}|α={alpha:.2f}]"]
     values = list(sim) + [sim_h]
-    return labels, values
+    return labels, values, z_mix
+
+# >>> NEW: z → 音频参数映射（可继续调味）
+def z_to_audio_params(z_tensor):
+    v = z_tensor.detach().cpu().numpy().reshape(-1)
+    def block(a, b):
+        x = v[a:b].mean() if b <= len(v) else v[a:].mean()
+        return float((np.tanh(x) + 1) / 2.0)  # 0-1
+    bpm   = int(np.clip(100 + 80 * block(0,4), 80, 190))
+    kick  = block(4,8)
+    snare = block(8,12)
+    hat   = block(12,16)
+    lead  = 0.6*block(0,8) + 0.4*block(12,16)
+    bass  = 0.4*block(0,4) + 0.6*block(8,16)
+    clip = lambda x: float(np.clip(x, 0.0, 1.0))
+    return {"bpm": bpm, "kick": clip(kick), "snare": clip(snare),
+            "hat": clip(hat), "lead": clip(lead), "bass": clip(bass)}
+
+# >>> NEW: 通过 WebSocket bridge 广播（POST /broadcast）
+def try_broadcast_wsbridge(drvA, drvB, alpha, params, step_idx, bar_labels, bar_values):
+    # 只有勾选 use_bridge 才发；避免卡 UI
+    if not use_bridge:
+        return
+    payload = {
+        "type": "hybrid_params",
+        "drivers": {"A": drvA, "B": drvB},
+        "alpha": float(alpha),
+        "step": int(step_idx),
+        "params": params,
+        "extra": {"bar": {"labels": bar_labels, "values": [float(x) for x in bar_values]}},
+    }
+    try:
+        requests.post(bridge_http, json=payload, timeout=0.25)
+    except Exception:
+        pass
 
 # ---------------- UI: playback controls ----------------
 ctrl_col, bar_col = st.columns([1, 3])
@@ -339,13 +377,14 @@ with ctrl_col:
         st.session_state.t_idx = 0
     play = st.toggle("▶ Play", value=True)
 
-labels_bar, values_bar = step_similarities(st.session_state.t_idx, drv_A, drv_B, alpha)
+labels_bar, values_bar, z_mix = step_similarities(st.session_state.t_idx, drv_A, drv_B, alpha)
 
 with bar_col:
     st.subheader("Live similarity (higher = closer to fingerprint)")
     df_bar = pd.DataFrame({"driver": labels_bar, "similarity": values_bar})
     st.bar_chart(df_bar.set_index("driver"))
 
+# >>> 调用：把当前帧推到 你已有的 LIVE_URL（不改你原逻辑）
 def push_live_frame(t_idx, alpha, drv_A, drv_B, A_all_row, sim_labels, sim_values):
     sim = {k: float(v) for k,v in zip(sim_labels, sim_values)}
     feat = {
@@ -366,11 +405,15 @@ def push_live_frame(t_idx, alpha, drv_A, drv_B, A_all_row, sim_labels, sim_value
     except Exception:
         pass
 
-# 计算好 labels_bar / values_bar 后，加：
+# —— 发到你现有的 LIVE_URL
 push_live_frame(
     st.session_state.t_idx, alpha, drv_A, drv_B,
     A_all[st.session_state.t_idx], labels_bar, values_bar
 )
+
+# >>> NEW —— 同时发到 WebSocket bridge（让 docs/ 前端实时联动）
+audio_params = z_to_audio_params(z_mix)
+try_broadcast_wsbridge(drv_A, drv_B, alpha, audio_params, st.session_state.t_idx, labels_bar, values_bar)
 
 # bottom curves
 st.subheader(f"Lap playback — step {st.session_state.t_idx+1}/{nT}  |  Event: {event_name} {year} (Q)")
@@ -434,7 +477,7 @@ def explain_one_segment(s_lo, s_hi, S_t, A_t, classes, drv_to_id, model, device)
         sims.sort(key=lambda x: x[1], reverse=True)
         return sims
 
-# —— 维持你原来的均值/方差统计，不改口径 —— 
+# —— 维持你原来的均值/方差统计 —— 
 def action_summary(A_all, s_lo, s_hi, labels=("d_heading", "d_brake", "d_throttle")):
     seg = A_all[s_lo:s_hi]
     mean = seg.mean(axis=0); std  = seg.std(axis=0)
@@ -487,13 +530,10 @@ else:
         st.caption("Top1 driver by segment")
         st.bar_chart(df_explain.set_index("segment")[["top1_sim"]])
 
-# === 自然语言摘要（新增，强制显示在表格/柱状图后面）===
+        # === 自然语言摘要（新增）===
         st.markdown("#### Narrative / 文本说明")
-        summary_text = explain_segments_text(df_explain, lang=lang)  # lang 来自侧栏 Language / 语言
-        if lang == "English":
-            st.info(summary_text or "No segment summary produced.")
-        else:
-            st.info(summary_text or "本圈未生成段落摘要。")
+        summary_text = explain_segments_text(df_explain, lang=lang)
+        st.info(summary_text or ("No segment summary produced." if lang=="English" else "本圈未生成段落摘要。"))
 
 st.info("Similarity = exp(-NLL). We show class sims and also the **Hybrid(A,B,α)** sim computed via z_mix = α·z_A + (1-α)·z_B.")
 st.caption("Quali only for now. Race & user-upload CSV will come next.")
