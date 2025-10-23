@@ -5,8 +5,10 @@ const ctx = {
        fx: new Tone.Filter(400, "lowpass") },
   b: { synth: new Tone.Synth({oscillator:{type:"square"}, envelope:{attack:0.02, release:0.2}}),
        fx: new Tone.Chorus(4, 2.5, 0.2).start() },
-  drums: { kick: new Tone.MembraneSynth({octaves:10, pitchDecay:0.02}),
-           hat: new Tone.NoiseSynth({volume:-20, envelope:{attack:0.005, decay:0.05, sustain:0}}) },
+  drums: {
+    kick: new Tone.MembraneSynth({octaves:10, pitchDecay:0.02}),
+    hat:  new Tone.NoiseSynth({volume:-20, envelope:{attack:0.005, decay:0.05, sustain:0}})
+  },
   mixAB: new Tone.CrossFade(0.5),
   meter: new Tone.Meter()
 };
@@ -16,6 +18,28 @@ ctx.drums.kick.connect(ctx.master);
 ctx.drums.hat.connect(ctx.master);
 ctx.mixAB.connect(ctx.master);
 ctx.master.connect(ctx.meter);
+
+// ---- Master bus polish: compressor + reverb + limiter ----
+ctx.bus = new Tone.Gain(1);
+ctx.comp = new Tone.Compressor(-14, 3);
+ctx.rev  = new Tone.Reverb({ decay: 2.4, wet: 0.12 });
+ctx.lim  = new Tone.Limiter(-1);
+ctx.master.disconnect();
+ctx.master.connect(ctx.bus);
+ctx.bus.chain(ctx.comp, ctx.rev, ctx.lim, Tone.Destination);
+
+// ===== Add real snare & better hat tone =====
+ctx.drums.snare = new Tone.NoiseSynth({
+  volume: -10,
+  envelope: { attack: 0.004, decay: 0.18, sustain: 0 }
+});
+ctx.drums.snareFx = new Tone.Filter(1800, "bandpass");
+ctx.drums.snare.chain(ctx.drums.snareFx, ctx.master);
+
+ctx.drums.hatFx = new Tone.Filter(9000, "highpass");
+ctx.drums.hat.disconnect();
+ctx.drums.hat.connect(ctx.drums.hatFx);
+ctx.drums.hatFx.connect(ctx.master);
 
 // ===== State =====
 let state = { t:0, alpha:0.5, features:{d_head:0, d_brake:0, d_thr:0}, sim:{} };
@@ -28,66 +52,35 @@ function scale(x, inLo, inHi, outLo, outHi){
   return outLo + Math.max(0, Math.min(1, r)) * (outHi - outLo);
 }
 
-// ==== 7个调式（Ionian=Major 作为 0，依次循环）====
-const MODE_SCALES = [
-  [0,2,4,5,7,9,11], // Ionian (Major)
-  [0,2,3,5,7,9,10], // Dorian
-  [0,1,3,5,7,8,10], // Phrygian
-  [0,2,4,6,7,9,11], // Lydian
-  [0,2,4,5,7,9,10], // Mixolydian
-  [0,2,3,5,7,8,10], // Aeolian (Minor)
-  [0,1,3,5,6,8,10]  // Locrian
-];
-let CURRENT_SCALE = MODE_SCALES[0];
-const ROOT = 57; // A3
-
-function setMode(modeIndex){
-  const idx = Math.max(0, Math.min(6, Math.floor(modeIndex)));
-  CURRENT_SCALE = MODE_SCALES[idx];
-}
-
-function quantizeMidi(m) {
-  // 把任意 MIDI 映射到 当前调式 最近音级
-  const rel = m - ROOT;
-  const oct = Math.floor(rel / 12);
-  const frac = rel - oct*12;
-  let best = CURRENT_SCALE[0], bestDist = 999;
-  for (const step of CURRENT_SCALE){
-    const d = Math.abs(step - frac);
-    if (d < bestDist){ bestDist = d; best = step; }
-  }
-  return ROOT + oct*12 + best;
-}
-
-/* ----------------------------------------------------------------
-   🎵 音乐引擎：统一拍速 + 固定鼓型 + 旋律/贝斯序列（音高量化）
-------------------------------------------------------------------*/
-
-// 1) 全局 Transport
-Tone.Transport.bpm.value = 120;
-Tone.Transport.swing = 0.04;
-Tone.Transport.swingSubdivision = "8n";
-
-// === 动态调式/音阶 ===
+// ==== 调式与量化（支持名字/数字两种设置）====
 const SCALES = {
-  major:     [0,2,4,5,7,9,11],
-  minor:     [0,2,3,5,7,8,10],
-  dorian:    [0,2,3,5,7,9,10],
-  pentatonic:[0,3,5,7,10]
+  ionian:     [0,2,4,5,7,9,11], // Major
+  dorian:     [0,2,3,5,7,9,10],
+  phrygian:   [0,1,3,5,7,8,10],
+  lydian:     [0,2,4,6,7,9,11],
+  mixolydian: [0,2,4,5,7,9,10],
+  aeolian:    [0,2,3,5,7,8,10], // Minor
+  locrian:    [0,1,3,5,6,8,10],
+  pentatonic: [0,3,5,7,10]
 };
+const MODE_INDEX = ["ionian","dorian","phrygian","lydian","mixolydian","aeolian","locrian"];
+
 let currentScale = SCALES.pentatonic;
-let currentRoot  = 57; // A3 默认根音
+let currentRoot  = 57; // A3
 
 function setScaleByName(name, rootMidi){
-  currentScale = SCALES[name] || currentScale;
+  const key = (name||"").toLowerCase();
+  if (SCALES[key]) currentScale = SCALES[key];
   if (typeof rootMidi === 'number') currentRoot = rootMidi|0;
 }
+function setMode(index){ // 0..6 映射到七个教会调式
+  const nm = MODE_INDEX[(index|0) % MODE_INDEX.length];
+  setScaleByName(nm, currentRoot);
+}
 function quantizeToScale(midi){
-  // 把任意 midi 量化到当前调式 & 根音附近
   const rel = midi - currentRoot;
   const oct = Math.floor(rel / 12);
   const within = rel - oct*12;
-  // 找到当前音阶里距离最近的音
   let best = currentScale[0], bestDist = 999;
   for (const st of currentScale){
     const d = Math.abs(within - st);
@@ -96,35 +89,45 @@ function quantizeToScale(midi){
   return currentRoot + oct*12 + best;
 }
 
-// 3) 与特征相连的“连续参数”（mapping 里更新）
+/* ----------------------------------------------------------------
+   🎵 音乐引擎：统一拍速 + 稳定鼓型 + 量化旋律/贝斯
+------------------------------------------------------------------*/
+Tone.Transport.bpm.value = 120;
+Tone.Transport.swing = 0.04;
+Tone.Transport.swingSubdivision = "8n";
+
+// 连续参数（mapping 更新）
 let hatDensity = 0.6;   // 0..1
 let kickLevel  = 0.8;   // 0..1
-let snrLevel   = 1.0;   // 0..1 （目前用 hat 代替军鼓触发）
+let snrLevel   = 1.0;   // 0..1
 let bassDepth  = 0.6;   // 0..1
 let leadBright = 0.7;   // 0..1
 
-// 4) 鼓：16 分音符 Loop（kick固定踏位、snare在 2/4 拍、hat 密度）
+// 鼓 Loop：稳定的 1/3 强拍 + 2/4 军鼓 + hat 密度
 const drumLoop = new Tone.Loop((time) => {
   const step = Math.floor((Tone.Transport.ticks / Tone.Transport.PPQ) * 4) % 16;
 
-  // kick：1/3 拍位固定；在 3.75拍附近偶尔补一脚
-  if (step % 8 === 0 || (step % 8 === 6 && Math.random() < 0.3 * kickLevel)) {
-    ctx.drums.kick.triggerAttackRelease("C2", "8n", time, kickLevel);
+  // Kick：强拍 + 轻加班（step 6/14 机率）
+  const kickVel = 0.5 + 0.5 * (state._kickDensity ?? 0.7);
+  if (step % 8 === 0 || (step % 8 === 6 && Math.random() < (state._kickDensity ?? 0.5)*0.6)) {
+    ctx.drums.kick.triggerAttackRelease("C2", "8n", time, kickVel);
   }
 
-  // “snare”：用 hat 代替的 2/4 拍重音
+  // Snare：2/4 拍
+  const snrVel = 0.4 + 0.6 * (state._snareDensity ?? 0.8);
   if (step === 4 || step === 12) {
-    if (snrLevel > 0.05) ctx.drums.hat.triggerAttackRelease("8n", time, snrLevel);
+    ctx.drums.snare.triggerAttackRelease("8n", time, snrVel);
   }
 
-  // hat：16 分音符，密度控制概率
-  if (Math.random() < hatDensity) {
+  // Hat：16 分，受密度控制
+  const hatP = 0.2 + 0.75 * (state._hatDensity ?? 0.6);
+  if (Math.random() < hatP) {
     ctx.drums.hat.triggerAttackRelease("16n", time, 0.6);
   }
 }, "16n");
 drumLoop.start(0);
 
-// 5) Bass：四分音符走位，根音上下小摆动（量化）
+// Bass：四分根音随 d_head 微摆，量化
 const bassLoop = new Tone.Loop((time) => {
   const drift = scale(state.features.d_head, -1.5, 1.5, -7, 7);
   const base  = quantizeToScale(currentRoot + Math.round(drift));
@@ -136,10 +139,10 @@ const bassLoop = new Tone.Loop((time) => {
 }, "4n");
 bassLoop.start(0);
 
-// 6) Lead：八分音符，音高随 d_thr 上下摆（量化到当前调式）；混合 & FX 随相似度
+// Lead：八分，音高随 d_thr，量化；混合/FX 随相似度
 const leadLoop = new Tone.Loop((time) => {
   const alpha = clamp(state.alpha, 0, 1);
-  ctx.mixAB.fade.value = alpha; // A/B timbre crossfade
+  ctx.mixAB.fade.value = alpha;
 
   const mov  = scale(state.features.d_thr, -1.2, 1.2, -5, 5);
   const note = quantizeToScale(currentRoot + 12 + Math.round(mov));
@@ -153,31 +156,23 @@ const leadLoop = new Tone.Loop((time) => {
 leadLoop.start("8n");
 
 /* ----------------------------------------------------------------
-   🎚️ 默认映射：只调整“连续参数”（让音乐稳定），不直接裸触发
-   —— 融合服务端密度参数（state._kickDensity/_hatDensity/_snareDensity）
+   🎚️ 默认映射：连续参数（与服务端密度融合）
 ------------------------------------------------------------------*/
 function defaultMapping(frame){
   const { alpha, features:{d_head, d_brake, d_thr} } = frame;
-
-  // 混合推子：NOR/VER等类 vs Hybrid
   ctx.mixAB.fade.value = clamp(alpha, 0, 1);
 
-  // 与服务端密度融合（0.5:0.5）
   const kBias = typeof state._kickDensity  === 'number' ? state._kickDensity  : 0.5;
   const hBias = typeof state._hatDensity   === 'number' ? state._hatDensity   : 0.5;
   const sBias = typeof state._snareDensity === 'number' ? state._snareDensity : 0.5;
 
-  // 鼓的强弱 / 密度
   kickLevel  = clamp(0.5 + Math.abs(d_brake)*0.8, 0.2, 1.0)*0.5 + 0.5*kBias;
   snrLevel   = clamp(0.6 + Math.abs(d_brake)*0.5, 0.2, 1.0)*0.5 + 0.5*sBias;
   hatDensity = clamp(0.3 + Math.abs(d_thr)*0.7,   0.1, 0.95)*0.5 + 0.5*hBias;
 
-  // 音色亮度
   leadBright = clamp(0.5 + Math.abs(d_head)*0.5, 0.2, 1.0);
   bassDepth  = clamp(0.4 + Math.abs(d_thr)*0.6,  0.2, 1.0);
 
-  // BPM 轻微随 α 漂移（若服务端没覆写）
-  // （若服务端推了 bpm，会在 applySynthParams 生效）
   if (!state._bpmLocked) {
     Tone.Transport.bpm.rampTo(110 + 40*alpha, 0.2);
   }
@@ -196,7 +191,7 @@ if (applyBtn) {
       const fn = new Function('ctx','state','defaultMapping', codeEl.value + '; return mapping;');
       mapping = fn(ctx, state, defaultMapping);
       alert('Applied!');
-    }catch(e){ alert('Error:\n' + e.message); }
+    }catch(e){ alert('Error:\\n' + e.message); }
   };
   document.addEventListener('keydown', (e)=>{
     if ((e.metaKey || e.ctrlKey) && e.key === 'Enter'){ applyBtn.click(); }
@@ -210,69 +205,73 @@ const startBtn = document.getElementById('start');
 if (startBtn){
   startBtn.onclick = async ()=>{
     await Tone.start();
-    if (Tone.Transport.state !== "started") Tone.Transport.start("+0.05"); // 稍微延时启动更稳
+    if (Tone.Transport.state !== "started") Tone.Transport.start("+0.05");
     startBtn.innerText = 'Running';
   };
 }
 
 /* ----------------------------------------------------------------
    合成参数（来自服务端 hybrid_params）
-   支持：bpm / mode / lead / bass / kick / hat / snare + α 融合
 ------------------------------------------------------------------*/
 function applySynthParams(params={}, alpha=0.5){
-  if (typeof params.bpm === 'number'){
-    state._bpmLocked = true;
-    Tone.Transport.bpm.value = params.bpm;
-  }
-  if (typeof params.mode === 'string'){
-    // 允许服务端切调式；根音可按赛道/车手映射（默认 A3）
-    setScaleByName(params.mode, currentRoot);
-  }
-
-  function applySynthParams(params={}, alpha=0.5){
   // BPM / Swing
   if (typeof params.bpm === 'number'){
+    state._bpmLocked = true;
     Tone.Transport.bpm.rampTo(params.bpm, 0.1);
   }
   if (typeof params.swing === 'number'){
-    Tone.Transport.swing = params.swing;             // 0..0.1
+    Tone.Transport.swing = clamp(params.swing, 0, 0.25);
     Tone.Transport.swingSubdivision = "8n";
   }
 
-  // 调式
-  if (typeof params.mode === 'number'){
-    setMode(params.mode);
-  }
+  // 调式：支持数字(0..6)或字符串
+  if (typeof params.mode === 'number') setMode(params.mode);
+  if (typeof params.mode === 'string') setScaleByName(params.mode, currentRoot);
 
-  // A/B timbre crossfade
+  // AB crossfade
   ctx.mixAB.fade.value = clamp(alpha, 0, 1);
 
-  // 轨道“强度/亮度”（0..1）→ 音量/滤波
+  // 轨道电平→dB
   const vol = (x)=> Tone.gainToDb(clamp(x,0,1));
   if (typeof params.lead === 'number')  ctx.a.synth.volume.value = vol(params.lead);
   if (typeof params.bass === 'number')  ctx.b.synth.volume.value = vol(params.bass);
 
-  // 打击乐密度写入到状态，让 Loop 使用
-  state._kickDensity  = clamp(params.kick ?? 0.5, 0, 1);
-  state._hatDensity   = clamp(params.hat  ?? 0.5, 0, 1);
-  // 你没有专门的 snare 音源，上面用 hat 代理了 snare 强度可忽略或复用
-  }
-  // 音量从 0..1 转 dB
-  const vol = (x)=> Tone.gainToDb(clamp(x,0,1));
-  if (typeof params.lead === 'number')  ctx.a.synth.volume.value = vol(params.lead);
-  if (typeof params.bass === 'number')  ctx.b.synth.volume.value = vol(params.bass);
-
-  // 节奏密度参数（与默认映射融合）
+  // 节奏密度
   state._kickDensity  = clamp(params.kick ?? 0.5, 0, 1);
   state._hatDensity   = clamp(params.hat  ?? 0.5, 0, 1);
   state._snareDensity = clamp(params.snare?? 0.5, 0, 1);
 
-  // 同时更新 AB Crossfade（也用 alpha）
-  ctx.mixAB.fade.value = clamp(alpha, 0, 1);
+  updateHUD({
+    bpm: Tone.Transport.bpm.value,
+    swing: Tone.Transport.swing,
+    ...params
+  });
 }
 
 /* ----------------------------------------------------------------
-   WebSocket 连接（保留）——建议把 window.WS_URL 写在 html 里
+   Tiny HUD（右上角展示当前参数）
+------------------------------------------------------------------*/
+const hud = document.createElement('div');
+hud.style.cssText = `
+  position:fixed; top:12px; right:12px; z-index:9999;
+  background:rgba(17,17,17,.66); color:#cbd5e1; font:12px/1.4 ui-monospace,monospace;
+  padding:10px 12px; border-radius:10px; box-shadow:0 6px 24px rgba(0,0,0,.35);
+`;
+document.body.appendChild(hud);
+function updateHUD(p){
+  hud.innerHTML = `
+    <b>Live Params</b><br/>
+    BPM: <b>${Math.round(p.bpm||0)}</b> &nbsp;
+    Swing: <b>${(p.swing||0).toFixed(2)}</b><br/>
+    Lead: ${(p.lead??0).toFixed(2)} &nbsp;
+    Bass: ${(p.bass??0).toFixed(2)}<br/>
+    Kick: ${(p.kick??0).toFixed(2)} &nbsp;
+    Hat: ${(p.hat??0).toFixed(2)}
+  `;
+}
+
+/* ----------------------------------------------------------------
+   WebSocket 连接
 ------------------------------------------------------------------*/
 const wsSpan  = document.getElementById('ws');
 const framePre= document.getElementById('frame');
@@ -298,7 +297,7 @@ function connect(){
     let msg = {};
     try{ msg = JSON.parse(ev.data); }catch(e){ return; }
 
-    // A) 参数消息：来自 Streamlit 每 N 帧推送（风格→音乐）
+    // A) 参数消息
     if (msg.type === 'hybrid_params' && msg.params){
       applySynthParams(msg.params, msg.alpha ?? state.alpha);
       if (framePre) framePre.textContent = JSON.stringify({hybrid_params: msg}, null, 2);
@@ -315,7 +314,7 @@ function connect(){
         f.features._kickDensity  = d(state._kickDensity);
         f.features._hatDensity   = d(state._hatDensity);
         f.features._snareDensity = d(state._snareDensity);
-        mapping(f); // 只调参数，音序由 Loop 播放
+        mapping(f);
       }
     }
   };
