@@ -148,6 +148,21 @@ def load_model_info(summary_json: str):
 classes, best_z = load_model_info(SUMMARY_JSON)
 drv_to_id = {d: i for i, d in enumerate(classes)}
 
+persona, persona_classes = load_persona(PERSONA_JSON)
+# 若 persona_classes 与 classes 不一致，则以 classes 为准，仅取交集
+persona = {k:v for k,v in persona.items() if k in classes}
+
+PERSONA_JSON = os.path.join(RESULT_DIR, "persona_summary.json")
+
+@st.cache_resource(show_spinner=False)
+def load_persona(persona_json: str):
+    if os.path.exists(persona_json):
+        try:
+            data = json.load(open(persona_json, "r"))
+            return data.get("persona", {}), data.get("classes", [])
+        except Exception:
+            pass
+    return {}, []
 # ---------------- Playback controls ----------------
 with st.sidebar.expander("Playback"):
     play_speed = st.slider("Playback speed (steps/sec)", 1, 12, 4)
@@ -337,32 +352,29 @@ def step_similarities(ti: int, drvA: str, drvB: str, alpha: float):
     return labels, values, z_mix
 
 # z → 音频参数映射（bpm/lead/bass/kick/hat/snare）
-def z_to_audio_params(z_tensor):
-    v = z_tensor.detach().cpu().numpy().reshape(-1)
-    def block(a, b):
-        x = v[a:b].mean() if b <= len(v) else v[a:].mean()
-        return float((np.tanh(x) + 1) / 2.0)  # 0-1
-    bpm   = int(np.clip(100 + 80 * block(0,4), 80, 190))
-    kick  = block(4,8)
-    snare = block(8,12)
-    hat   = block(12,16)
-    lead  = 0.6*block(0,8) + 0.4*block(12,16)
-    bass  = 0.4*block(0,4) + 0.6*block(8,16)
-    clip = lambda x: float(np.clip(x, 0.0, 1.0))
-    return {"bpm": bpm, "kick": clip(kick), "snare": clip(snare),
-            "hat": clip(hat), "lead": clip(lead), "bass": clip(bass)}
+def mix_params(A_name, B_name, alpha):
+    """从 persona_summary 取两位车手的音乐参数并线性混合"""
+    A = persona.get(A_name, {}).get("music", None)
+    B = persona.get(B_name, {}).get("music", None)
+    if not A or not B:
+        return None
+    mix = {}
+    for k in ["bpm","swing","hat","kick","lead","bass"]:
+        mix[k] = float(alpha*A[k] + (1.0-alpha)*B[k])
+    # 调式 mode 用“插值后再量化”的简单策略：就取 A/B 二者的加权四舍五入
+    mix["mode"] = int(round(alpha*A["mode"] + (1.0-alpha)*B["mode"])) % 7
+    return {"A":A, "B":B, "mix":mix}
 
-# 通过 WebSocket bridge 广播（POST /broadcast）
-def try_broadcast_wsbridge(drvA, drvB, alpha, params, step_idx, bar_labels, bar_values):
-    if not use_bridge:
+def try_broadcast_wsbridge_params(drvA, drvB, alpha, params_mix, step_idx, bar_labels, bar_values):
+    if not use_bridge or (params_mix is None):
         return
     payload = {
         "type": "hybrid_params",
         "drivers": {"A": drvA, "B": drvB},
         "alpha": float(alpha),
         "step": int(step_idx),
-        "params": params,
-        "extra": {"bar": {"labels": bar_labels, "values": [float(x) for x in bar_values]}},
+        "params": params_mix["mix"],  # 前端直接吃 mix 即可
+        "extra": {"bar": {"labels": bar_labels, "values": [float(x) for x in bar_values]}}
     }
     try:
         requests.post(bridge_http, json=payload, timeout=0.25)
@@ -377,6 +389,9 @@ with ctrl_col:
     play = st.toggle("▶ Play", value=True)
 
 labels_bar, values_bar, z_mix = step_similarities(st.session_state.t_idx, drv_A, drv_B, alpha)
+# 计算/显示相似度柱状图之后：
+params_mix = mix_params(drv_A, drv_B, alpha)
+try_broadcast_wsbridge_params(drv_A, drv_B, alpha, params_mix, st.session_state.t_idx, labels_bar, values_bar)
 
 with bar_col:
     st.subheader("Live similarity (higher = closer to fingerprint)")
