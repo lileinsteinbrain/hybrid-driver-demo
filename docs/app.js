@@ -28,6 +28,37 @@ function scale(x, inLo, inHi, outLo, outHi){
   return outLo + Math.max(0, Math.min(1, r)) * (outHi - outLo);
 }
 
+// ==== 7个调式（Ionian=Major 作为 0，依次循环）====
+const MODE_SCALES = [
+  [0,2,4,5,7,9,11], // Ionian (Major)
+  [0,2,3,5,7,9,10], // Dorian
+  [0,1,3,5,7,8,10], // Phrygian
+  [0,2,4,6,7,9,11], // Lydian
+  [0,2,4,5,7,9,10], // Mixolydian
+  [0,2,3,5,7,8,10], // Aeolian (Minor)
+  [0,1,3,5,6,8,10]  // Locrian
+];
+let CURRENT_SCALE = MODE_SCALES[0];
+const ROOT = 57; // A3
+
+function setMode(modeIndex){
+  const idx = Math.max(0, Math.min(6, Math.floor(modeIndex)));
+  CURRENT_SCALE = MODE_SCALES[idx];
+}
+
+function quantizeMidi(m) {
+  // 把任意 MIDI 映射到 当前调式 最近音级
+  const rel = m - ROOT;
+  const oct = Math.floor(rel / 12);
+  const frac = rel - oct*12;
+  let best = CURRENT_SCALE[0], bestDist = 999;
+  for (const step of CURRENT_SCALE){
+    const d = Math.abs(step - frac);
+    if (d < bestDist){ bestDist = d; best = step; }
+  }
+  return ROOT + oct*12 + best;
+}
+
 /* ----------------------------------------------------------------
    🎵 音乐引擎：统一拍速 + 固定鼓型 + 旋律/贝斯序列（音高量化）
 ------------------------------------------------------------------*/
@@ -196,6 +227,35 @@ function applySynthParams(params={}, alpha=0.5){
   if (typeof params.mode === 'string'){
     // 允许服务端切调式；根音可按赛道/车手映射（默认 A3）
     setScaleByName(params.mode, currentRoot);
+  }
+
+  function applySynthParams(params={}, alpha=0.5){
+  // BPM / Swing
+  if (typeof params.bpm === 'number'){
+    Tone.Transport.bpm.rampTo(params.bpm, 0.1);
+  }
+  if (typeof params.swing === 'number'){
+    Tone.Transport.swing = params.swing;             // 0..0.1
+    Tone.Transport.swingSubdivision = "8n";
+  }
+
+  // 调式
+  if (typeof params.mode === 'number'){
+    setMode(params.mode);
+  }
+
+  // A/B timbre crossfade
+  ctx.mixAB.fade.value = clamp(alpha, 0, 1);
+
+  // 轨道“强度/亮度”（0..1）→ 音量/滤波
+  const vol = (x)=> Tone.gainToDb(clamp(x,0,1));
+  if (typeof params.lead === 'number')  ctx.a.synth.volume.value = vol(params.lead);
+  if (typeof params.bass === 'number')  ctx.b.synth.volume.value = vol(params.bass);
+
+  // 打击乐密度写入到状态，让 Loop 使用
+  state._kickDensity  = clamp(params.kick ?? 0.5, 0, 1);
+  state._hatDensity   = clamp(params.hat  ?? 0.5, 0, 1);
+  // 你没有专门的 snare 音源，上面用 hat 代理了 snare 强度可忽略或复用
   }
   // 音量从 0..1 转 dB
   const vol = (x)=> Tone.gainToDb(clamp(x,0,1));
