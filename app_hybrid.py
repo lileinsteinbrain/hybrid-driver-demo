@@ -3,11 +3,10 @@ import os, sys, time, json
 import numpy as np
 import pandas as pd
 import streamlit as st
-import requests  # 单次导入
+import requests
 
 # ==== live push endpoints ====
 LIVE_URL = os.environ.get("LIVE_PUSH_URL", "http://localhost:8000/push")
-# WebSocket bridge 的 HTTP 广播端点（本地跑 ws_bridge.py 默认 http://localhost:8765/broadcast）
 BRIDGE_HTTP = os.environ.get("BRIDGE_HTTP", "http://localhost:8765/broadcast")
 
 # ==== render backend safe ====
@@ -22,6 +21,7 @@ if SCRIPTS_DIR not in sys.path:
 RESULT_DIR   = os.path.join(ROOT, "driver-fingerprint", "results", "integration_Q5")
 MODEL_PATH   = os.path.join(RESULT_DIR, "model.pth")
 SUMMARY_JSON = os.path.join(RESULT_DIR, "summary_integration.json")
+PERSONA_JSON = os.path.join(RESULT_DIR, "persona_summary.json")   # <-- 先定义
 
 # ==== fastf1 cache: use /tmp on cloud ====
 import fastf1
@@ -35,17 +35,22 @@ from utils_fp import (
     collect_driver_laps_resampled, build_dataset
 )
 
+# -------- persona loader (先定义函数，后面再调用) --------
+@st.cache_resource(show_spinner=False)
+def load_persona(persona_json: str):
+    if os.path.exists(persona_json):
+        try:
+            data = json.load(open(persona_json, "r"))
+            return data.get("persona", {}), data.get("classes", [])
+        except Exception as e:
+            st.warning(f"Failed to load persona JSON: {e}")
+            return {}, []
+    else:
+        st.warning(f"Persona JSON not found: {persona_json}")
+        return {}, []
+
 # -------- feature helper for USER CSV (optional) --------
 def make_features_from_csv(df_raw: pd.DataFrame, n_pts: int = 220):
-    """
-    期望列：
-      - 必需：time_s, speed_kph, throttle(0-100), brake(0/1 或 0-100)
-      - 可选：x, y（用于算 heading / a_lat），distance（没有就由速度积分）
-    生成与你训练一致的特征：
-      S: [phase, v/90, tanh(a_lat/6), tanh(a_long/5), tanh(mu_proxy/9.81)]
-      A: [d_heading, d_brake, d_throttle]
-      并在 phase∈[0,1] 的均匀网格上重采样到 220 点。
-    """
     for col in ["time_s","speed_kph","throttle","brake"]:
         if col not in df_raw.columns:
             raise ValueError(f"CSV missing column: {col}")
@@ -60,8 +65,7 @@ def make_features_from_csv(df_raw: pd.DataFrame, n_pts: int = 220):
     if "distance" in df_raw.columns:
         dist = df_raw["distance"].to_numpy().astype(float)
     else:
-        dt = np.diff(t, prepend=t[0])
-        dt[0] = dt[1] if len(dt)>1 else 0.01
+        dt = np.diff(t, prepend=t[0]); dt[0] = dt[1] if len(dt)>1 else 0.01
         dist = np.cumsum(v * dt)
 
     L = max(1e-6, (np.nanmax(dist) - np.nanmin(dist)))
@@ -125,13 +129,12 @@ EVENT_BY_YEAR = {
     2023: ["British Grand Prix","United States Grand Prix","Australian Grand Prix","Bahrain Grand Prix","Brazilian Grand Prix"],
     2024: ["British Grand Prix","United States Grand Prix","Australian Grand Prix","Bahrain Grand Prix","Brazilian Grand Prix"],
 }
-
 with st.sidebar.expander("Session"):
     year = st.selectbox("Year", YEAR_OPTS, index=0)
     event_name = st.selectbox("Event", EVENT_BY_YEAR[year], index=0)
     st.write("Session: **Qualifying (Q)**")
 
-# read classes & best z from summary (fallback if not found)
+# read classes & best z from summary
 @st.cache_resource(show_spinner=True)
 def load_model_info(summary_json: str):
     classes = ["NOR", "RUS", "VER"]
@@ -148,21 +151,10 @@ def load_model_info(summary_json: str):
 classes, best_z = load_model_info(SUMMARY_JSON)
 drv_to_id = {d: i for i, d in enumerate(classes)}
 
+# load persona AFTER classes
 persona, persona_classes = load_persona(PERSONA_JSON)
-# 若 persona_classes 与 classes 不一致，则以 classes 为准，仅取交集
 persona = {k:v for k,v in persona.items() if k in classes}
 
-PERSONA_JSON = os.path.join(RESULT_DIR, "persona_summary.json")
-
-@st.cache_resource(show_spinner=False)
-def load_persona(persona_json: str):
-    if os.path.exists(persona_json):
-        try:
-            data = json.load(open(persona_json, "r"))
-            return data.get("persona", {}), data.get("classes", [])
-        except Exception:
-            pass
-    return {}, []
 # ---------------- Playback controls ----------------
 with st.sidebar.expander("Playback"):
     play_speed = st.slider("Playback speed (steps/sec)", 1, 12, 4)
@@ -309,7 +301,7 @@ def get_z(driver_code: str):
 
 def _fwd_with_z_override_or_bypass(S_step: torch.Tensor, z: torch.Tensor):
     try:
-        return model(S_step, None, z_override=z)  # 若 forward 支持
+        return model(S_step, None, z_override=z)
     except TypeError:
         pass
     except Exception:
@@ -351,9 +343,40 @@ def step_similarities(ti: int, drvA: str, drvB: str, alpha: float):
     values = list(sim) + [sim_h]
     return labels, values, z_mix
 
-# z → 音频参数映射（bpm/lead/bass/kick/hat/snare）
+# ===== 音频参数映射 & Bridge 推送 =====
+def z_to_audio_params(z_tensor):
+    v = z_tensor.detach().cpu().numpy().reshape(-1)
+    def block(a, b):
+        x = v[a:b].mean() if b <= len(v) else v[a:].mean()
+        return float((np.tanh(x) + 1) / 2.0)  # 0-1
+    bpm   = int(np.clip(100 + 80 * block(0,4), 80, 190))
+    kick  = block(4,8)
+    snare = block(8,12)
+    hat   = block(12,16)
+    lead  = 0.6*block(0,8) + 0.4*block(12,16)
+    bass  = 0.4*block(0,4) + 0.6*block(8,16)
+    clip = lambda x: float(np.clip(x, 0.0, 1.0))
+    return {"bpm": bpm, "kick": clip(kick), "snare": clip(snare),
+            "hat": clip(hat), "lead": clip(lead), "bass": clip(bass)}
+
+def try_broadcast_wsbridge(drvA, drvB, alpha, params, step_idx, bar_labels, bar_values):
+    if not use_bridge or (params is None):
+        return
+    payload = {
+        "type": "hybrid_params",
+        "drivers": {"A": drvA, "B": drvB},
+        "alpha": float(alpha),
+        "step": int(step_idx),
+        "params": params,
+        "extra": {"bar": {"labels": bar_labels, "values": [float(x) for x in bar_values]}},
+    }
+    try:
+        requests.post(bridge_http, json=payload, timeout=0.25)
+    except Exception:
+        pass
+
+# persona → music 参数线性混合（bpm/lead/bass/kick/hat/snare/mode）
 def mix_params(A_name, B_name, alpha):
-    """从 persona_summary 取两位车手的音乐参数并线性混合"""
     A = persona.get(A_name, {}).get("music", None)
     B = persona.get(B_name, {}).get("music", None)
     if not A or not B:
@@ -361,7 +384,6 @@ def mix_params(A_name, B_name, alpha):
     mix = {}
     for k in ["bpm","swing","hat","kick","lead","bass"]:
         mix[k] = float(alpha*A[k] + (1.0-alpha)*B[k])
-    # 调式 mode 用“插值后再量化”的简单策略：就取 A/B 二者的加权四舍五入
     mix["mode"] = int(round(alpha*A["mode"] + (1.0-alpha)*B["mode"])) % 7
     return {"A":A, "B":B, "mix":mix}
 
@@ -373,7 +395,7 @@ def try_broadcast_wsbridge_params(drvA, drvB, alpha, params_mix, step_idx, bar_l
         "drivers": {"A": drvA, "B": drvB},
         "alpha": float(alpha),
         "step": int(step_idx),
-        "params": params_mix["mix"],  # 前端直接吃 mix 即可
+        "params": params_mix["mix"],
         "extra": {"bar": {"labels": bar_labels, "values": [float(x) for x in bar_values]}}
     }
     try:
@@ -389,7 +411,6 @@ with ctrl_col:
     play = st.toggle("▶ Play", value=True)
 
 labels_bar, values_bar, z_mix = step_similarities(st.session_state.t_idx, drv_A, drv_B, alpha)
-# 计算/显示相似度柱状图之后：
 params_mix = mix_params(drv_A, drv_B, alpha)
 try_broadcast_wsbridge_params(drv_A, drv_B, alpha, params_mix, st.session_state.t_idx, labels_bar, values_bar)
 
@@ -398,7 +419,7 @@ with bar_col:
     df_bar = pd.DataFrame({"driver": labels_bar, "similarity": values_bar})
     st.bar_chart(df_bar.set_index("driver"))
 
-# 把当前帧推到你已有的 LIVE_URL（老格式）
+# 兼容旧的 Live push（帧级特征）
 def push_live_frame(t_idx, alpha, drv_A, drv_B, A_all_row, sim_labels, sim_values):
     sim = {k: float(v) for k,v in zip(sim_labels, sim_values)}
     feat = {
@@ -406,28 +427,23 @@ def push_live_frame(t_idx, alpha, drv_A, drv_B, A_all_row, sim_labels, sim_value
         "d_brake": float(A_all_row[1]),
         "d_thr": float(A_all_row[2]),
     }
-    payload = {
-        "t": int(t_idx),
-        "alpha": float(alpha),
-        "driverA": drv_A,
-        "driverB": drv_B,
-        "features": feat,
-        "sim": sim,
-    }
+    payload = {"t": int(t_idx), "alpha": float(alpha),
+               "driverA": drv_A, "driverB": drv_B,
+               "features": feat, "sim": sim}
     try:
         requests.post(LIVE_URL, json=payload, timeout=0.2)
     except Exception:
         pass
 
-# —— 发到 LIVE_URL
 push_live_frame(
     st.session_state.t_idx, alpha, drv_A, drv_B,
     A_all[st.session_state.t_idx], labels_bar, values_bar
 )
 
-# —— 同时发到 WebSocket bridge（让 docs/ 前端实时联动）
-audio_params = z_to_audio_params(z_mix)
-try_broadcast_wsbridge(drv_A, drv_B, alpha, audio_params, st.session_state.t_idx, labels_bar, values_bar)
+# 同时把 z_mix 直接映射为音频参数，发给 Bridge（可与 persona 混合并行存在）
+try_broadcast_wsbridge(drv_A, drv_B, alpha,
+                       z_to_audio_params(z_mix),
+                       st.session_state.t_idx, labels_bar, values_bar)
 
 # bottom curves
 st.subheader(f"Lap playback — step {st.session_state.t_idx+1}/{nT}  |  Event: {event_name} {year} (Q)")
@@ -491,13 +507,11 @@ def explain_one_segment(s_lo, s_hi, S_t, A_t, classes, drv_to_id, model, device)
         sims.sort(key=lambda x: x[1], reverse=True)
         return sims
 
-# 均值/方差统计
 def action_summary(A_all, s_lo, s_hi, labels=("d_heading", "d_brake", "d_throttle")):
     seg = A_all[s_lo:s_hi]
     mean = seg.mean(axis=0); std  = seg.std(axis=0)
     return {labels[i]: (float(mean[i]), float(std[i])) for i in range(min(len(labels), seg.shape[1]))}
 
-# 自然语言摘要
 def explain_segments_text(df_explain: pd.DataFrame, lang: str = "中文"):
     lines = []
     for _, r in df_explain.iterrows():
