@@ -1,4 +1,8 @@
-# Hybrid Driver
+# Synthracer: Hybrid Driver
+
+> **Synthracer** is my research project on reading Formula 1 performance through sound instead of dashboards.
+> This repo is its working system: driver fingerprints learned from real telemetry, blended and turned into live music.
+> Its perceptual evaluation, testing whether people can tell drivers apart by ear, is [f1-abx-test](https://github.com/lileinsteinbrain/f1-abx-test).
 
 **Learn each Formula 1 driver's "driving fingerprint" from real telemetry, blend two drivers into a hybrid, and listen to the result as live music.**
 
