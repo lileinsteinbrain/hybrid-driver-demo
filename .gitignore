@@ -3,3 +3,4 @@ __pycache__/
 data/cache/**
 !.gitkeep
 .streamlit/
+.DS_Store
