@@ -7,38 +7,38 @@ import pandas as pd
 import streamlit as st
 import fastf1
 
-# --- 安全起见，禁用交互式后端 ---
+# --- Disable interactive backends to be safe ---
 os.environ.setdefault("MPLBACKEND", "Agg")
 
-# 让 Python 找到你的 utils_fp.py
+# Let Python find utils_fp.py
 import sys
 sys.path.append(os.path.join(os.path.dirname(__file__), "driver-fingerprint", "scripts"))
 from utils_fp import PolicyNet, nll_weighted, collect_driver_laps_resampled, build_dataset
 
-# ---------- 固定路径 ----------
+# ---------- Fixed paths ----------
 PROJ_ROOT    = os.path.dirname(__file__)
 RESULT_DIR   = os.path.join(PROJ_ROOT, "driver-fingerprint", "results", "integration_Q5")
 MODEL_PATH   = os.path.join(RESULT_DIR, "model.pth")
 SUMMARY_JSON = os.path.join(RESULT_DIR, "summary_integration.json")
 FASTF1_CACHE = os.path.join(PROJ_ROOT, "data", "cache")
 
-# FastF1 缓存（Cloud 首次会自动下载到这里）
+# FastF1 cache (downloaded here on first run in the cloud)
 fastf1.Cache.enable_cache(FASTF1_CACHE)
 
-# ---------- Streamlit 页面 ----------
+# ---------- Streamlit page ----------
 st.set_page_config(page_title="Hybrid Driver Demo", layout="wide")
 st.sidebar.title("Hybrid Demo")
 st.sidebar.caption("Real telemetry → similarity vs driver fingerprints")
 
-# 年份/赛事（只开 Q）
+# Year / event (qualifying only)
 YEAR_OPTS = [2023, 2024]
 EVENT_BY_YEAR = {
     2023: [
-        "British Grand Prix",        # Silverstone（宽）
-        "United States Grand Prix",  # Austin（节奏多变）
-        "Australian Grand Prix",     # Melbourne（可超车）
-        "Bahrain Grand Prix",        # Sakhir（宽、制动重）
-        "Brazilian Grand Prix",      # Interlagos（上坡弯多）
+        "British Grand Prix",        # Silverstone (wide)
+        "United States Grand Prix",  # Austin (varied rhythm)
+        "Australian Grand Prix",     # Melbourne (overtaking possible)
+        "Bahrain Grand Prix",        # Sakhir (wide, heavy braking)
+        "Brazilian Grand Prix",      # Interlagos (many uphill corners)
     ],
     2024: [
         "British Grand Prix",
@@ -52,9 +52,9 @@ EVENT_BY_YEAR = {
 with st.sidebar.expander("Session"):
     year = st.selectbox("Year", YEAR_OPTS, index=0)
     event_name = st.selectbox("Event", EVENT_BY_YEAR[year], index=0)
-    st.write("Session: **Qualifying (Q)**")  # 先只开 Q，Race 以后再放开
+    st.write("Session: **Qualifying (Q)**")  # qualifying only for now; race later
 
-# 读取 classes / z_dim（来自训练摘要）
+# Read classes / z_dim (from the training summary)
 @st.cache_resource(show_spinner=True)
 def load_model_info(summary_json: str):
     classes = ["NOR", "RUS", "VER"]
@@ -81,19 +81,19 @@ with st.sidebar.expander("Playback"):
 st.title("Hybrid Driver Similarity — Qualifying Telemetry vs Driver Fingerprints")
 st.caption("Pick drivers & session, play lap telemetry; see **live similarity** to each pro’s fingerprint.")
 
-# ---------- 加载会话 ----------
+# ---------- Load session ----------
 @st.cache_data(show_spinner=True, ttl=3600)
 def load_session(year: int, gp_name: str):
-    sess = fastf1.get_session(year, gp_name, "Q")  # 只用 Q
+    sess = fastf1.get_session(year, gp_name, "Q")  # qualifying only
     sess.load()
     return sess
 
 session = load_session(year, event_name)
 
-# ---------- 提取/重采样若干圈 ----------
+# ---------- Extract / resample several laps ----------
 import fastf1
 
-# ---------- 提取/重采样若干圈（带缓存） ----------
+# ---------- Extract / resample several laps (cached) ----------
 @st.cache_data(show_spinner=True, ttl=600,
                hash_funcs={fastf1.core.Session: lambda _: None})
 def get_resampled_laps_cached(_session, codes, n_pts=220, max_laps=3):
@@ -111,7 +111,7 @@ def get_resampled_laps_cached(_session, codes, n_pts=220, max_laps=3):
 
 packs = get_resampled_laps_cached(session, show_codes, n_pts=220, max_laps=3)
 
-# 选择 driver & 圈（选最快的前几圈里某一圈）
+# Choose driver & lap (one of the fastest few laps)
 c1, c2 = st.columns([1, 1])
 with c1:
     drv = st.selectbox("Pick a driver", show_codes, index=0)
@@ -124,13 +124,13 @@ if not S_list:
     st.error("No laps available for this driver/session. Try another driver or event.")
     st.stop()
 
-# 与训练一致：切两个窗口 (0.15–0.55) & (0.60–0.85)
+# Same as training: two windows (0.15-0.55) & (0.60-0.85)
 S_all, A_all, meta, D_lap, lap_sizes = build_dataset(
     [S_list[lap_idx]], [A_list[lap_idx]], [M_list[lap_idx]],
     use_window=True, windows=((0.15, 0.55), (0.60, 0.85))
 )
 
-# ---------- 构图并载权重 ----------
+# ---------- Build graph and load weights ----------
 import torch
 device = "cuda" if torch.cuda.is_available() else "cpu"
 sd, ad = S_all.shape[1], A_all.shape[1]
@@ -146,7 +146,7 @@ else:
     st.warning("model.pth not found — using randomly initialized weights (demo only).")
 model.to(device).eval()
 
-# 动作 z-score（和训练一致）
+# Action z-score (same as training)
 A_mu = A_all.mean(0, keepdims=True)
 A_std = A_all.std(0, keepdims=True) + 1e-6
 A_std_all = (A_all - A_mu) / A_std
@@ -155,7 +155,7 @@ to_t = lambda x: torch.tensor(x, dtype=torch.float32, device=device)
 S_t = to_t(S_all)
 A_t = to_t(A_std_all)
 
-# 播放控件
+# Playback controls
 if "t_idx" not in st.session_state:
     st.session_state.t_idx = 0
 nT = S_t.shape[0]
@@ -166,7 +166,7 @@ with ctrl_col:
         st.session_state.t_idx = 0
     play = st.toggle("▶ Play", value=True)
 
-# 一步 similarity（softmax(-NLL)）
+# One-step similarity (softmax(-NLL))
 def step_similarity(ti: int):
     with torch.no_grad():
         nlls = []
@@ -188,7 +188,7 @@ with bar_col:
     df_bar = pd.DataFrame({"driver": classes, "similarity": sim})
     st.bar_chart(df_bar.set_index("driver"))
 
-# 底部实时动作曲线
+# Live action curves at the bottom
 st.subheader(f"Lap playback — step {st.session_state.t_idx+1}/{nT}  |  Event: {event_name} {year} (Q)")
 cols = st.columns(3)
 labels = ["d_heading", "d_brake", "d_throttle"]
@@ -196,11 +196,11 @@ for i, c in enumerate(cols):
     with c:
         st.line_chart(pd.DataFrame({labels[i]: A_all[:st.session_state.t_idx+1, i]}))
 
-# 时间轴
+# Timeline
 prog = st.slider("timeline", 0, nT-1, st.session_state.t_idx, key="timeline")
 st.session_state.t_idx = prog
 
-# 自动播放
+# Autoplay
 if play:
     time.sleep(1.0 / max(1, int(play_speed)))
     st.session_state.t_idx = (st.session_state.t_idx + 1) % nT if auto_loop else min(nT-1, st.session_state.t_idx+1)
@@ -210,4 +210,4 @@ if play:
         st.experimental_rerun()
 
 st.info("Similarity uses exp(-NLL). Lower NLL ⇒ higher similarity.")
-st.caption("Race 暂未开放；等我们验证完 Race 的稳定性再放开。Upload F1 game CSV 的入口也会在后续版本加入。")
+st.caption("Race sessions are not available yet; they will open once race stability is validated. F1 game CSV upload will come in a later version.")

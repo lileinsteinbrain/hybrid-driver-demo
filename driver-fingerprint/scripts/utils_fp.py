@@ -111,7 +111,7 @@ class PolicyNet(nn.Module):
     def __init__(self, sd, ad, n, z_dim=8, hidden=96, use_embedding=True):
         super().__init__()
         self.use_embedding = use_embedding
-        self.allow_override = True  # ✅ 允许手动覆盖 embedding
+        self.allow_override = True  # ✅ allow manual embedding override
 
         if use_embedding:
             self.emb = nn.Embedding(n, z_dim)
@@ -127,7 +127,7 @@ class PolicyNet(nn.Module):
         )
 
     def forward(self, s, d=None, z_override=None):
-        # ✅ 若给了 z_override，就直接用，不查 embedding
+        # ✅ If z_override is given, use it directly instead of the embedding lookup
         if self.use_embedding:
             if (z_override is not None) and self.allow_override:
                 z = z_override
@@ -151,33 +151,33 @@ def nll_weighted(m, lv, y, W=None):
 def train_and_eval(
     S_all, A_all, D_lap, lap_sizes, outdir,
     use_embedding=True, epochs=20, batch=1024, seed=7, weights=(1.0,1.3,1.0),
-    # --- 新增可选超参 ---
+    # --- New optional hyperparameters ---
     z_dim=8, hidden=96, dropout=0.1, weight_decay=1e-4
 ):
     """
-    兼容旧用法；外部可传 z_dim/hidden/dropout/weight_decay。
+    Backward compatible; callers may pass z_dim/hidden/dropout/weight_decay.
     """
     os.makedirs(outdir, exist_ok=True)
     device = "cuda" if torch.cuda.is_available() else "cpu"
     np.random.seed(seed); torch.manual_seed(seed)
 
-    # 标准化动作
+    # Standardise actions
     A_mu = A_all.mean(0, keepdims=True); A_std = A_all.std(0, keepdims=True)+1e-6
     A_all_std = (A_all - A_mu)/A_std
 
     
-        # ---- 修正 lap_sizes ----
+        # ---- Fix lap_sizes ----
     lap_sizes = np.asarray(lap_sizes).reshape(-1)
-    # 如果 lap_sizes 的长度等于样本数，而不是圈数，则重新推断圈数
+    # If lap_sizes has one entry per sample rather than per lap, re-infer the lap count
     if lap_sizes.size == S_all.shape[0]:
-        # 假设每圈样本数相等（取平均）
+        # Assume equal samples per lap (use the mean)
         avg_len = int(np.mean(lap_sizes))
         n_laps = max(1, S_all.shape[0] // avg_len)
         lap_sizes = np.full(n_laps, avg_len, dtype=int)
         print(f"⚠️ lap_sizes looks per-sample; corrected to {n_laps} laps × {avg_len} samples each.")
 
 
-    # 圈级切分 -> 展开到样本级索引
+    # Lap-level split -> expand to sample-level indices
     n_laps = len(lap_sizes)
     idx_laps = np.arange(n_laps); np.random.shuffle(idx_laps)
     sp = int(n_laps*0.8); lap_tr, lap_te = idx_laps[:sp], idx_laps[sp:]
@@ -196,7 +196,7 @@ def train_and_eval(
     S_tr_t, A_tr_t, D_tr_t = to_t(S_tr), to_t(A_tr), torch.tensor(D_tr, dtype=torch.long, device=device)
     S_te_t, A_te_t, D_te_t = to_t(S_te), to_t(A_te), torch.tensor(D_te, dtype=torch.long, device=device)
 
-    # --- 用上新增的 z_dim / dropout / weight_decay ---
+    # --- Use the new z_dim / dropout / weight_decay ---
     n_drivers = int(D_lap.max()) + 1 if use_embedding else 1
     model = PolicyNet(
         sd=S_all.shape[1], ad=A_all.shape[1], n=n_drivers,
@@ -205,7 +205,7 @@ def train_and_eval(
     opt = optim.Adam(model.parameters(), lr=2e-3, weight_decay=weight_decay)
     W = torch.tensor(weights, device=device)
 
-    # 训练
+    # Training
     for ep in range(epochs):
         model.train()
         if len(S_tr_t) == 0: break
@@ -219,7 +219,7 @@ def train_and_eval(
             loss = nll_weighted(m, lv, A_tr_t[j], W).mean()
             opt.zero_grad(); loss.backward(); opt.step()
 
-    # Swap（确定性错配）
+    # Swap test (deterministic mismatch)
     model.eval()
     with torch.no_grad():
         if use_embedding:
@@ -250,7 +250,7 @@ def train_and_eval(
     import pandas as pd
     pd.DataFrame(mat).to_csv(os.path.join(outdir, "cross_nll.csv"), index=False)
 
-    # 存模型
+    # Save model
     torch.save(model.state_dict(), os.path.join(outdir, "model.pth"))
     with open(os.path.join(outdir, "summary.json"), "w") as f:
         import json; json.dump({"correct_nll": nll_ok, "wrong_nll": nll_bd, "delta_percent": rel}, f, indent=2)
@@ -276,7 +276,7 @@ def plot_dbrake_ci(A_list, M_list, out_png, n_pts=220):
 
 def plot_dbrake_ci_from_flat(A_all, drv_names, lap_sizes, out_png):
     """
-    从扁平数组画 d_brake vs phase 曲线（自动按每圈拆分 + 平滑）
+    Plot d_brake vs phase from a flat array (auto-split per lap + smoothing).
     """
     import matplotlib.pyplot as plt
     from collections import defaultdict
@@ -295,7 +295,7 @@ def plot_dbrake_ci_from_flat(A_all, drv_names, lap_sizes, out_png):
             dbr = Ai[:, 1]
         else:
             dbr = Ai
-        # 统一插值到 220 点
+        # Interpolate everything to 220 points
         x = np.linspace(0, 1, len(dbr))
         grid = np.linspace(0, 1, 220)
         by_drv[d].append(np.interp(grid, x, dbr))

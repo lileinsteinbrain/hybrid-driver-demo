@@ -6,7 +6,7 @@ from pydantic import BaseModel
 import uvicorn
 import os
 
-PAGES_ORIGIN = os.environ.get("PAGES_ORIGIN", "*")  # 允许的前端来源，先 * ，上线可填你的 pages 域名
+PAGES_ORIGIN = os.environ.get("PAGES_ORIGIN", "*")  # allowed front-end origin; "*" for now, set to the Pages domain in production
 
 app = FastAPI()
 app.add_middleware(

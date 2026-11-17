@@ -19,7 +19,7 @@ async def ws_endpoint(ws: WebSocket):
     clients.add(ws)
     try:
         while True:
-            # 可选：接收前端消息，这里忽略
+            # Optional: receive messages from the front end (ignored here)
             await ws.receive_text()
     except Exception:
         pass

@@ -21,7 +21,7 @@ if SCRIPTS_DIR not in sys.path:
 RESULT_DIR   = os.path.join(ROOT, "driver-fingerprint", "results", "integration_Q5")
 MODEL_PATH   = os.path.join(RESULT_DIR, "model.pth")
 SUMMARY_JSON = os.path.join(RESULT_DIR, "summary_integration.json")
-PERSONA_JSON = os.path.join(RESULT_DIR, "persona_summary.json")   # <-- 先定义
+PERSONA_JSON = os.path.join(RESULT_DIR, "persona_summary.json")   # <-- defined first
 
 # ==== fastf1 cache: use /tmp on cloud ====
 import fastf1
@@ -35,7 +35,7 @@ from utils_fp import (
     collect_driver_laps_resampled, build_dataset
 )
 
-# -------- persona loader (先定义函数，后面再调用) --------
+# -------- persona loader (define the function first, call it later) --------
 @st.cache_resource(show_spinner=False)
 def load_persona(persona_json: str):
     if os.path.exists(persona_json):
@@ -175,7 +175,7 @@ live_url = f"{LIVE_STAGE_BASE}?a={drv_A}&b={drv_B}&alpha={alpha:.2f}"
 st.sidebar.link_button("🎧 Open Live Stage (music)", live_url, type="primary")
 st.sidebar.caption("The music page runs in your browser (WebAudio/Tone.js). Use α to hear the hybrid mix.")
 
-# WebSocket bridge 选项
+# WebSocket bridge options
 with st.sidebar.expander("Live Stage link (WebSocket bridge)"):
     use_bridge = st.checkbox("Broadcast via WebSocket bridge", value=False)
     bridge_http = st.text_input("Bridge HTTP endpoint", BRIDGE_HTTP)
@@ -186,7 +186,6 @@ ENABLE_USER_UPLOAD = True
 user_csv = None
 with st.sidebar.expander("Data source"):
     source = st.radio("Telemetry source", ["FastF1 (official)", "Upload CSV"], index=0)
-    lang = st.radio("Language / 语言", ["English", "中文"], index=1, horizontal=True)
     if ENABLE_USER_UPLOAD and source == "Upload CSV":
         user_csv = st.file_uploader(
             "Upload lap CSV (cols: time_s, speed_kph, throttle, brake, optional x,y,distance)",
@@ -234,16 +233,16 @@ else:
 with c1:
     telem_drv = st.selectbox("Pick a driver (telemetry source)", telem_options, index=0)
 
-# 取 S/A/M
+# Get S/A/M
 if telem_drv == "USER":
     try:
         df_u = pd.read_csv(user_csv)
         S_list, A_list, M_list = make_features_from_csv(df_u, n_pts=220)
         if (S_list is None) or (len(S_list)==0):
-            st.error("CSV 解析失败：信号不足或缺字段。请检查列名/数据质量。")
+            st.error("CSV parsing failed: not enough signal or missing fields. Check column names / data quality.")
             st.stop()
     except Exception as e:
-        st.error(f"CSV 解析失败：{e}")
+        st.error(f"CSV parsing failed: {e}")
         st.stop()
 else:
     S_list, A_list, M_list = packs.get(telem_drv, ([], [], []))
@@ -343,7 +342,7 @@ def step_similarities(ti: int, drvA: str, drvB: str, alpha: float):
     values = list(sim) + [sim_h]
     return labels, values, z_mix
 
-# ===== 音频参数映射 & Bridge 推送 =====
+# ===== Audio parameter mapping & bridge push =====
 def z_to_audio_params(z_tensor):
     v = z_tensor.detach().cpu().numpy().reshape(-1)
     def block(a, b):
@@ -375,7 +374,7 @@ def try_broadcast_wsbridge(drvA, drvB, alpha, params, step_idx, bar_labels, bar_
     except Exception:
         pass
 
-# persona → music 参数线性混合（bpm/lead/bass/kick/hat/snare/mode）
+# Linear blend of persona -> music parameters (bpm/lead/bass/kick/hat/snare/mode)
 def mix_params(A_name, B_name, alpha):
     A = persona.get(A_name, {}).get("music", None)
     B = persona.get(B_name, {}).get("music", None)
@@ -419,7 +418,7 @@ with bar_col:
     df_bar = pd.DataFrame({"driver": labels_bar, "similarity": values_bar})
     st.bar_chart(df_bar.set_index("driver"))
 
-# 兼容旧的 Live push（帧级特征）
+# Backward compatible with the old live push (frame-level features)
 def push_live_frame(t_idx, alpha, drv_A, drv_B, A_all_row, sim_labels, sim_values):
     sim = {k: float(v) for k,v in zip(sim_labels, sim_values)}
     feat = {
@@ -440,7 +439,7 @@ push_live_frame(
     A_all[st.session_state.t_idx], labels_bar, values_bar
 )
 
-# 同时把 z_mix 直接映射为音频参数，发给 Bridge（可与 persona 混合并行存在）
+# Also map z_mix directly to audio parameters and send to the bridge (can run alongside the persona blend)
 try_broadcast_wsbridge(drv_A, drv_B, alpha,
                        z_to_audio_params(z_mix),
                        st.session_state.t_idx, labels_bar, values_bar)
@@ -471,7 +470,7 @@ if play:
 # =======================
 st.markdown("---")
 st.subheader("Explain this lap (segment-by-segment)")
-n_segs = st.slider("How many segments", 4, 12, 6, help="按 phase 等分切段；后续可换成赛道/弯角切分")
+n_segs = st.slider("How many segments", 4, 12, 6, help="Splits the lap evenly by phase; could later split by track corners")
 
 def make_segments_by_phase(meta_df: pd.DataFrame, n_segs: int = 6):
     phases = meta_df["phase"].to_numpy() if isinstance(meta_df, pd.DataFrame) and ("phase" in meta_df.columns) else np.linspace(0, 1, len(meta_df))
@@ -512,21 +511,18 @@ def action_summary(A_all, s_lo, s_hi, labels=("d_heading", "d_brake", "d_throttl
     mean = seg.mean(axis=0); std  = seg.std(axis=0)
     return {labels[i]: (float(mean[i]), float(std[i])) for i in range(min(len(labels), seg.shape[1]))}
 
-def explain_segments_text(df_explain: pd.DataFrame, lang: str = "中文"):
+def explain_segments_text(df_explain: pd.DataFrame):
     lines = []
     for _, r in df_explain.iterrows():
         seg = str(r["segment"])
         d1, s1 = r["top1_driver"], r["top1_sim"]
         d2     = r["top2_driver"]
         conf   = r["confidence"]
-        if lang == "English":
-            lines.append(f"{seg}: most similar to **{d1}** (sim={s1:.3f}, Δ={conf:.3f} vs {d2}).")
-        else:
-            lines.append(f"{seg} 段：**最像 {d1}**（相似度 {s1:.3f}，领先 {d2} {conf:.3f}）。")
+        lines.append(f"{seg}: most similar to **{d1}** (sim={s1:.3f}, Δ={conf:.3f} vs {d2}).")
     return "\n".join(lines)
 
 if play:
-    st.info("⏸ 暂停播放以运行 Explain。")
+    st.info("⏸ Pause playback to run Explain.")
 else:
     if st.button("🧠 Explain current lap"):
         segs = make_segments_by_phase(meta, n_segs=n_segs) if (isinstance(meta, pd.DataFrame) and ("phase" in meta.columns)) \
@@ -558,9 +554,9 @@ else:
         st.caption("Top1 driver by segment")
         st.bar_chart(df_explain.set_index("segment")[["top1_sim"]])
 
-        st.markdown("#### Narrative / 文本说明")
-        summary_text = explain_segments_text(df_explain, lang=lang)
-        st.info(summary_text or ("No segment summary produced." if lang=="English" else "本圈未生成段落摘要。"))
+        st.markdown("#### Narrative")
+        summary_text = explain_segments_text(df_explain)
+        st.info(summary_text or "No segment summary produced.")
 
 st.info("Similarity = exp(-NLL). We show class sims and also the **Hybrid(A,B,α)** sim computed via z_mix = α·z_A + (1-α)·z_B.")
 st.caption("Quali only for now. Race & user-upload CSV will come next.")

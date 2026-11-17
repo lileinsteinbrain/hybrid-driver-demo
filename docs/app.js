@@ -43,7 +43,7 @@ ctx.drums.hatFx.connect(ctx.master);
 
 // ===== State =====
 let state = { t:0, alpha:0.5, features:{d_head:0, d_brake:0, d_thr:0}, sim:{} };
-let mapping = defaultMapping;  // 可被 live editor 覆盖
+let mapping = defaultMapping;  // can be overridden by the live editor
 
 // ===== Utils =====
 function clamp(x, a, b){ return Math.max(a, Math.min(b, x)); }
@@ -52,7 +52,7 @@ function scale(x, inLo, inHi, outLo, outHi){
   return outLo + Math.max(0, Math.min(1, r)) * (outHi - outLo);
 }
 
-// ==== 调式与量化（支持名字/数字两种设置）====
+// ==== Modes & quantisation (accepts names or numbers) ====
 const SCALES = {
   ionian:     [0,2,4,5,7,9,11], // Major
   dorian:     [0,2,3,5,7,9,10],
@@ -73,7 +73,7 @@ function setScaleByName(name, rootMidi){
   if (SCALES[key]) currentScale = SCALES[key];
   if (typeof rootMidi === 'number') currentRoot = rootMidi|0;
 }
-function setMode(index){ // 0..6 映射到七个教会调式
+function setMode(index){ // 0..6 maps to the seven church modes
   const nm = MODE_INDEX[(index|0) % MODE_INDEX.length];
   setScaleByName(nm, currentRoot);
 }
@@ -90,36 +90,36 @@ function quantizeToScale(midi){
 }
 
 /* ----------------------------------------------------------------
-   🎵 音乐引擎：统一拍速 + 稳定鼓型 + 量化旋律/贝斯
+   🎵 Music engine: shared tempo + stable drum pattern + quantised melody/bass
 ------------------------------------------------------------------*/
 Tone.Transport.bpm.value = 120;
 Tone.Transport.swing = 0.04;
 Tone.Transport.swingSubdivision = "8n";
 
-// 连续参数（mapping 更新）
+// Continuous parameters (updated by mapping)
 let hatDensity = 0.6;   // 0..1
 let kickLevel  = 0.8;   // 0..1
 let snrLevel   = 1.0;   // 0..1
 let bassDepth  = 0.6;   // 0..1
 let leadBright = 0.7;   // 0..1
 
-// 鼓 Loop：稳定的 1/3 强拍 + 2/4 军鼓 + hat 密度
+// Drum loop: steady kicks on beats 1/3 + snare on 2/4 + hat density
 const drumLoop = new Tone.Loop((time) => {
   const step = Math.floor((Tone.Transport.ticks / Tone.Transport.PPQ) * 4) % 16;
 
-  // Kick：强拍 + 轻加班（step 6/14 机率）
+  // Kick: downbeats + occasional extra hits (probability on steps 6/14)
   const kickVel = 0.5 + 0.5 * (state._kickDensity ?? 0.7);
   if (step % 8 === 0 || (step % 8 === 6 && Math.random() < (state._kickDensity ?? 0.5)*0.6)) {
     ctx.drums.kick.triggerAttackRelease("C2", "8n", time, kickVel);
   }
 
-  // Snare：2/4 拍
+  // Snare: beats 2 and 4
   const snrVel = 0.4 + 0.6 * (state._snareDensity ?? 0.8);
   if (step === 4 || step === 12) {
     ctx.drums.snare.triggerAttackRelease("8n", time, snrVel);
   }
 
-  // Hat：16 分，受密度控制
+  // Hat: 16th notes, density-controlled
   const hatP = 0.2 + 0.75 * (state._hatDensity ?? 0.6);
   if (Math.random() < hatP) {
     ctx.drums.hat.triggerAttackRelease("16n", time, 0.6);
@@ -127,7 +127,7 @@ const drumLoop = new Tone.Loop((time) => {
 }, "16n");
 drumLoop.start(0);
 
-// Bass：四分根音随 d_head 微摆，量化
+// Bass: quarter-note root that shifts slightly with d_head, quantised
 const bassLoop = new Tone.Loop((time) => {
   const drift = scale(state.features.d_head, -1.5, 1.5, -7, 7);
   const base  = quantizeToScale(currentRoot + Math.round(drift));
@@ -139,7 +139,7 @@ const bassLoop = new Tone.Loop((time) => {
 }, "4n");
 bassLoop.start(0);
 
-// Lead：八分，音高随 d_thr，量化；混合/FX 随相似度
+// Lead: eighth notes, pitch follows d_thr, quantised; mix/FX follow similarity
 const leadLoop = new Tone.Loop((time) => {
   const alpha = clamp(state.alpha, 0, 1);
   ctx.mixAB.fade.value = alpha;
@@ -156,7 +156,7 @@ const leadLoop = new Tone.Loop((time) => {
 leadLoop.start("8n");
 
 /* ----------------------------------------------------------------
-   🎚️ 默认映射：连续参数（与服务端密度融合）
+   🎚️ Default mapping: continuous parameters (blended with server-side density)
 ------------------------------------------------------------------*/
 function defaultMapping(frame){
   const { alpha, features:{d_head, d_brake, d_thr} } = frame;
@@ -179,7 +179,7 @@ function defaultMapping(frame){
 }
 
 /* ----------------------------------------------------------------
-   Live coding 编辑器（保留）
+   Live coding editor (kept)
 ------------------------------------------------------------------*/
 const codeEl = document.getElementById('code');
 if (codeEl) codeEl.value = `function mapping(frame){ defaultMapping(frame); }`;
@@ -199,7 +199,7 @@ if (applyBtn) {
 }
 
 /* ----------------------------------------------------------------
-   开始音频（必须用户点击）+ 启动 Transport
+   Start audio (requires a user click) + start Transport
 ------------------------------------------------------------------*/
 const startBtn = document.getElementById('start');
 if (startBtn){
@@ -211,7 +211,7 @@ if (startBtn){
 }
 
 /* ----------------------------------------------------------------
-   合成参数（来自服务端 hybrid_params）
+   Synth parameters (from server-side hybrid_params)
 ------------------------------------------------------------------*/
 function applySynthParams(params={}, alpha=0.5){
   // BPM / Swing
@@ -224,19 +224,19 @@ function applySynthParams(params={}, alpha=0.5){
     Tone.Transport.swingSubdivision = "8n";
   }
 
-  // 调式：支持数字(0..6)或字符串
+  // Mode: accepts a number (0..6) or a string
   if (typeof params.mode === 'number') setMode(params.mode);
   if (typeof params.mode === 'string') setScaleByName(params.mode, currentRoot);
 
   // AB crossfade
   ctx.mixAB.fade.value = clamp(alpha, 0, 1);
 
-  // 轨道电平→dB
+  // Track level -> dB
   const vol = (x)=> Tone.gainToDb(clamp(x,0,1));
   if (typeof params.lead === 'number')  ctx.a.synth.volume.value = vol(params.lead);
   if (typeof params.bass === 'number')  ctx.b.synth.volume.value = vol(params.bass);
 
-  // 节奏密度
+  // Rhythm density
   state._kickDensity  = clamp(params.kick ?? 0.5, 0, 1);
   state._hatDensity   = clamp(params.hat  ?? 0.5, 0, 1);
   state._snareDensity = clamp(params.snare?? 0.5, 0, 1);
@@ -249,7 +249,7 @@ function applySynthParams(params={}, alpha=0.5){
 }
 
 /* ----------------------------------------------------------------
-   Tiny HUD（右上角展示当前参数）
+   Tiny HUD (shows current parameters in the top-right corner)
 ------------------------------------------------------------------*/
 const hud = document.createElement('div');
 hud.style.cssText = `
@@ -271,7 +271,7 @@ function updateHUD(p){
 }
 
 /* ----------------------------------------------------------------
-   WebSocket 连接
+   WebSocket connection
 ------------------------------------------------------------------*/
 const wsSpan  = document.getElementById('ws');
 const framePre= document.getElementById('frame');
@@ -297,14 +297,14 @@ function connect(){
     let msg = {};
     try{ msg = JSON.parse(ev.data); }catch(e){ return; }
 
-    // A) 参数消息
+    // A) Parameter message
     if (msg.type === 'hybrid_params' && msg.params){
       applySynthParams(msg.params, msg.alpha ?? state.alpha);
       if (framePre) framePre.textContent = JSON.stringify({hybrid_params: msg}, null, 2);
       return;
     }
 
-    // B) 帧消息：{t, alpha, features, sim}
+    // B) Frame message: {t, alpha, features, sim}
     if (typeof msg.t === 'number' && msg.features){
       state = msg;
       if (framePre) framePre.textContent = JSON.stringify(state, null, 2);

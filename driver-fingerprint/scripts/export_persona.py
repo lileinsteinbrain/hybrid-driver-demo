@@ -4,15 +4,15 @@ from sklearn.decomposition import PCA
 import torch
 import sys
 
-# 让 Python 找到 utils_fp.py
+# Let Python find utils_fp.py
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 SCRIPTS = os.path.join(ROOT, "driver-fingerprint", "scripts")
 if SCRIPTS not in sys.path:
     sys.path.insert(0, SCRIPTS)
 
-from utils_fp import PolicyNet, nll_weighted  # 只为取 embedding 结构
+from utils_fp import PolicyNet, nll_weighted  # only for the embedding structure
 
-# 配置（按你现有路径）
+# Config (existing paths)
 RESULT_DIR   = os.path.join(ROOT, "driver-fingerprint", "results", "integration_Q5")
 DATA_PATH    = os.path.join(ROOT, "driver-fingerprint", "integration", "data_integration.npz")
 SUMMARY_JSON = os.path.join(RESULT_DIR, "summary_integration.json")
@@ -23,14 +23,14 @@ def rms(x): return float(np.sqrt(np.mean(x**2)))
 def var(x): return float(np.var(x))
 
 def main():
-    # 1) 读数据/类名
+    # 1) Read data / class names
     data = np.load(DATA_PATH, allow_pickle=True)
     S_all   = data["S_all"]
     A_all   = data["A_all"]   # [:, :, 0:3] ~ [d_head, d_brake, d_thr]
-    D_lap   = data["D_lap"]   # 可能是字符串或 id
+    D_lap   = data["D_lap"]   # may be strings or ids
     lapsz   = data["lap_sizes"]
 
-    # 类名顺序从 summary_integration.json 取（与训练一致）
+    # Class order taken from summary_integration.json (same as training)
     classes = ["NOR","RUS","VER"]
     z_dim = 16
     try:
@@ -40,21 +40,21 @@ def main():
     except Exception:
         pass
 
-    # 标签→id
+    # Label -> id
     if D_lap.dtype.kind in {"U","S","O"}:
         names = np.asarray(D_lap).astype(str)
         uniq  = sorted(np.unique(names))
         name2id = {d:i for i,d in enumerate(uniq)}
         D_id = np.array([name2id[d] for d in names], dtype=np.int64)
-        # 重映射成 classes 顺序
+        # Remap to the order of classes
         remap = {name2id[d]: i for i,d in enumerate(classes)}
         D_lap_id = np.array([remap[idx] for idx in D_id], dtype=np.int64)
     else:
         D_lap_id = np.asarray(D_lap, dtype=np.int64)
 
-    # 2) 取每个 driver 的 A_all（拼回整圈）
+    # 2) Get each driver's A_all (reassembled into full laps)
     seg = np.cumsum(np.r_[0, lapsz])
-    # 展开成逐时刻数组
+    # Flatten into a per-timestep array
     A_flat = []
     D_flat = []
     for k in range(len(lapsz)):
@@ -64,7 +64,7 @@ def main():
     A_flat = np.concatenate(A_flat, axis=0)  # [Tsum, 3]
     D_flat = np.concatenate(D_flat, axis=0)  # [Tsum]
 
-    # 3) 从 model.pth 里取 embedding（z_d）
+    # 3) Get the embedding (z_d) from model.pth
     sd, ad = S_all.shape[1], A_all.shape[1]
     device = "cpu"
     model = PolicyNet(sd=sd, ad=ad, n=len(classes), z_dim=z_dim, hidden=96, use_embedding=True).to(device)
@@ -73,11 +73,11 @@ def main():
     with torch.no_grad():
         z_all = model.emb.weight.detach().cpu().numpy()  # [K, z_dim]
 
-    # 4) 指标（E/T/S）按 driver 聚合
+    # 4) Aggregate metrics (E/T/S) per driver
     feats = {i: {"thr":[], "brk":[], "hd":[]} for i in range(len(classes))}
     for i in range(len(classes)):
         idx = (D_flat == i)
-        if idx.sum() == 0:  # 容错
+        if idx.sum() == 0:  # guard
             feats[i]["thr"] = [np.zeros(1)]
             feats[i]["brk"] = [np.zeros(1)]
             feats[i]["hd"]  = [np.zeros(1)]
@@ -94,14 +94,14 @@ def main():
         S = 1.0 / (1.0 + var(thr) + var(brk))        # Smoothness
         raw[name] = {"E":E, "T":T, "S":S}
 
-    # 5) embedding 做 PCA→ (p1,p2)
+    # 5) PCA on embeddings -> (p1, p2)
     pca = PCA(n_components=2)
     P = pca.fit_transform(z_all)  # [K,2]
     for i, name in enumerate(classes):
         raw[name]["p1"] = float(P[i,0])
         raw[name]["p2"] = float(P[i,1])
 
-    # 6) 全体 min-max 归一到 [0,1]
+    # 6) Global min-max normalisation to [0,1]
     keys = ["E","T","S","p1","p2"]
     norm = {}
     for k in keys:
@@ -114,7 +114,7 @@ def main():
             for j, n in enumerate(classes):
                 norm.setdefault(n, {})[k] = float((raw[n][k] - lo)/(hi-lo))
 
-    # 7) 公开的“可追溯”音乐映射（写死公式）
+    # 7) Public, traceable music mapping (fixed formulas)
     def to_params(n):
         E,T,S,p1,p2 = norm[n]["E"], norm[n]["T"], norm[n]["S"], norm[n]["p1"], norm[n]["p2"]
         bpm   = int(100 + 60*E)               # 100..160
@@ -124,7 +124,7 @@ def main():
         lead  = 0.3 + 0.7*S
         bass  = 0.4 + 0.6*E
         theta = np.arctan2((p2-0.5), (p1-0.5))
-        mode  = int(np.floor(((theta+np.pi)/(2*np.pi))*7)) % 7  # 0..6 对应 7 个调式
+        mode  = int(np.floor(((theta+np.pi)/(2*np.pi))*7)) % 7  # 0..6 -> the 7 modes
         return {"bpm": bpm, "swing": float(swing), "hat": float(hat), "kick": float(kick),
                 "lead": float(lead), "bass": float(bass), "mode": int(mode)}
 

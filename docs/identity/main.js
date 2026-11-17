@@ -9,7 +9,7 @@ socket.onopen = () => {
 socket.onmessage = (event) => {
   const data = JSON.parse(event.data);
 
-  // 你现在 live-stage 已经在发这些
+  // live-stage already sends these
   const {
     z_A,
     z_B,

@@ -72,7 +72,7 @@
     <div class="footer">Hybrid mix via z-mix α·z<sub>A</sub> + (1-α)·z<sub>B</sub> → mapped to synth/drum params.</div>
   </div>
 
-  <!-- Tone.js：主 CDN（unpkg） + 备用（jsdelivr），任一成功即可 -->
+  <!-- Tone.js: primary CDN (unpkg) + fallback (jsdelivr); either one is enough -->
   <script>
     window.__toneLoaded = false;
   </script>
@@ -81,7 +81,7 @@
   <script>
     setTimeout(function(){
       if(!window.__toneLoaded){
-        // 备用载入
+        // Fallback loader
         var s=document.createElement('script');
         s.src="https://cdn.jsdelivr.net/npm/tone@14.8.49/build/Tone.js";
         s.onload=function(){ window.__toneLoaded=true; };
@@ -89,10 +89,10 @@
       }
     }, 500);
   </script>
-<!-- === WebSocket Bridge 地址配置 === -->
+<!-- === WebSocket bridge address config === -->
 <script>
   window.WS_URL   = "wss://hybrid-driver-demo-production.up.railway.app/ws";
-  window.PUSH_URL = "https://hybrid-driver-demo-production.up.railway.app/push"; // 仅在前端主动POST时用
+  window.PUSH_URL = "https://hybrid-driver-demo-production.up.railway.app/push"; // only used when the front end POSTs directly
 </script>
   
   <script>
@@ -140,23 +140,23 @@
           statusEl.textContent="Tone.js not loaded.";
           return;
         }
-        // 必需的用户手势启动
+        // Start on the required user gesture
         await Tone.start();
         setCtxState();
         Tone.Transport.bpm.value=parseInt(bpm.value,10);
         Tone.Transport.start();
 
-        // 合成器
+        // Synths
         kickSynth=new Tone.MembraneSynth({pitchDecay:0.02,octaves:9,oscillator:{type:"sine"},envelope:{attack:0.001,decay:0.4,sustain:0.1,release:0.2}}).toDestination();
         snareSynth=new Tone.NoiseSynth({noise:{type:"white"},envelope:{attack:0.001,decay:0.2,sustain:0}}).toDestination();
         hatSynth=new Tone.MetalSynth({frequency:200,envelope:{attack:0.001,decay:0.1,release:0.01},harmonicity:5.1,modulationIndex:32}).toDestination();
         leadSynth=new Tone.Synth({oscillator:{type:"sawtooth"},envelope:{attack:0.01,decay:0.2,sustain:0.3,release:0.2}}).toDestination();
         bassSynth=new Tone.MonoSynth({oscillator:{type:"square"},filter:{Q:1,type:"lowpass",rolloff:-24},envelope:{attack:0.01,decay:0.2,sustain:0.3,release:0.3},filterEnvelope:{attack:0.02,decay:0.2,sustain:0.2,release:0.2,baseFrequency:100,octaves:2.5}}).toDestination();
 
-        // 成功哔一声作为确认
+        // A short beep to confirm success
         leadSynth.triggerAttackRelease("A4","8n");
 
-        // 循环
+        // Loop
         kickLoop=new Tone.Loop((time)=>{ kickSynth.volume.value=Tone.gainToDb(parseFloat(kick.value)); kickSynth.triggerAttackRelease("C2","8n",time); },"1n").start(0);
         snareLoop=new Tone.Loop((time)=>{ snareSynth.volume.value=Tone.gainToDb(parseFloat(snare.value)); snareSynth.triggerAttackRelease("8n",time); },"2n").start("2n");
         hatLoop=new Tone.Loop((time)=>{ const d=parseFloat(hat.value); if(Math.random()<d){ hatSynth.triggerAttackRelease("32n",time); } },"8n").start(0);
@@ -184,7 +184,7 @@
       }catch(e){ console.error(e); }
     }
 
-    // 事件绑定
+    // Event bindings
     btnStart.addEventListener("click", startAudio);
     btnStop.addEventListener("click", stopAudio);
     bpm.addEventListener("input", ()=>{ if(window.Tone){ Tone.Transport.bpm.value=parseInt(bpm.value,10); } updLabels(); });
@@ -195,12 +195,12 @@
     lead.addEventListener("input", updLabels);
     bass.addEventListener("input", updLabels);
 
-    // 兜底：任何点击都尝试恢复 AudioContext（有些浏览器需要）
+    // Fallback: any click tries to resume the AudioContext (some browsers need this)
     document.addEventListener("click", ()=>{
       try{ if(window.Tone && Tone.getContext().state!=="running"){ Tone.getContext().resume(); setCtxState(); } }catch(e){}
     });
 
-    // 如果 CDN 很慢，3 秒后仍未加载则提示
+    // If the CDN is slow, show a notice if still not loaded after 3 s
     setTimeout(()=>{ if(!window.__toneLoaded){ cdnWarn.style.display='block'; } }, 3000);
     setInterval(setCtxState, 500);
   })();

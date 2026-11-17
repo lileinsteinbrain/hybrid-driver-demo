@@ -1,5 +1,5 @@
 [phases.setup]
-# Railway 用 Nix 安装 Python
+# Railway installs Python via Nix
 nixPkgs = ["python311", "pip"]
 
 [phases.install]
